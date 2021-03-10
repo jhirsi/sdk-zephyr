@@ -576,6 +576,20 @@ static int ppp_send(const struct device *dev, struct net_pkt *pkt)
 			protocol = htons(PPP_IP);
 		} else if (net_pkt_family(pkt) == AF_INET6) {
 			protocol = htons(PPP_IPV6);
+#if defined(CONFIG_PPP_DIALUP)
+		} else if (net_pkt_family(pkt) == AF_PACKET) {
+			char type = (NET_IPV6_HDR(pkt)->vtc & 0xf0);
+			switch (type) {
+			case 0x60:
+				protocol = htons(PPP_IPV6);
+				break;
+			case 0x40:
+				protocol = htons(PPP_IP);
+				break;
+			default:
+				return -EPROTONOSUPPORT;
+			}
+#endif
 		} else {
 			return -EPROTONOSUPPORT;
 		}
@@ -770,7 +784,7 @@ use_random_mac:
 	/* If we have a GSM modem with PPP support, then do not start the
 	 * interface automatically but only after the modem is ready.
 	 */
-	if (IS_ENABLED(CONFIG_MODEM_GSM_PPP)) {
+	if (IS_ENABLED(CONFIG_MODEM_GSM_PPP) || IS_ENABLED(CONFIG_PPP_DIALUP)) {
 		net_if_flag_set(iface, NET_IF_NO_AUTO_START);
 	}
 }
