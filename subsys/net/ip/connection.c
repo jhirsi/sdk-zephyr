@@ -527,6 +527,7 @@ static enum net_verdict conn_raw_socket(struct net_pkt *pkt,
 		raw_pkt = net_pkt_clone(pkt, CLONE_TIMEOUT);
 		if (!raw_pkt) {
 			net_stats_update_per_proto_drop(pkt_iface, proto);
+			NET_WARN("conn_raw_socket: cloning failed, pkt %p dropped", pkt);
 			return NET_DROP;
 		}
 

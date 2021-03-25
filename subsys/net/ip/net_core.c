@@ -61,10 +61,12 @@ static inline enum net_verdict process_data(struct net_pkt *pkt,
 	int ret;
 	bool locally_routed = false;
 
+#if defined(CONFIG_NET_L2_ETHERNET)
 	ret = net_packet_socket_input(pkt);
 	if (ret != NET_CONTINUE) {
 		return ret;
 	}
+#endif
 
 #if defined(CONFIG_NET_IPV6_FRAGMENT)
 	/* If the packet is routed back to us when we have reassembled
@@ -96,7 +98,13 @@ static inline enum net_verdict process_data(struct net_pkt *pkt,
 			return ret;
 		}
 	}
-
+#if defined(CONFIG_PPP_DIALUP)
+	/* L2 processed, now we can pass to packet socket: */
+	ret = net_packet_socket_input(pkt);
+	if (ret != NET_CONTINUE) {
+		return ret;
+	}
+#endif
 	ret = net_canbus_socket_input(pkt);
 	if (ret != NET_CONTINUE) {
 		return ret;

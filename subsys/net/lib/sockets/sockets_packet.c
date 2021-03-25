@@ -356,10 +356,15 @@ static int packet_sock_setsockopt_vmeth(void *obj, int level, int optname,
 	return zpacket_setsockopt_ctx(obj, level, optname, optval, optlen);
 }
 
+static int packet_sock_close_vmeth(void *obj)
+{
+	return sock_fd_op_vtable.fd_vtable.close(obj);
+}
 static const struct socket_op_vtable packet_sock_fd_op_vtable = {
 	.fd_vtable = {
 		.read = packet_sock_read_vmeth,
 		.write = packet_sock_write_vmeth,
+		.close = packet_sock_close_vmeth,
 		.ioctl = packet_sock_ioctl_vmeth,
 	},
 	.bind = packet_sock_bind_vmeth,
@@ -376,6 +381,9 @@ static const struct socket_op_vtable packet_sock_fd_op_vtable = {
 static bool packet_is_supported(int family, int type, int proto)
 {
 	if (((type == SOCK_RAW) && (proto == ETH_P_ALL)) ||
+#if defined(CONFIG_PPP_DIALUP)	
+		((type == SOCK_RAW) && (proto == IPPROTO_RAW)) ||	
+#endif
 	    ((type == SOCK_DGRAM) && (proto > 0))) {
 		return true;
 	}
