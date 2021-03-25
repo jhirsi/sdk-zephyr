@@ -70,8 +70,8 @@ static enum net_verdict process_ppp_msg(struct net_if *iface,
 		goto quit;
 	}
 
-	if ((IS_ENABLED(CONFIG_NET_IPV4) && protocol == PPP_IP) ||
-	    (IS_ENABLED(CONFIG_NET_IPV6) && protocol == PPP_IPV6)) {
+	if (((IS_ENABLED(CONFIG_NET_IPV4) || IS_ENABLED(CONFIG_PPP_DIALUP)) && protocol == PPP_IP) ||
+	    ((IS_ENABLED(CONFIG_NET_IPV6) || IS_ENABLED(CONFIG_PPP_DIALUP)) && protocol == PPP_IPV6)) {
 		/* Remove the protocol field so that IP packet processing
 		 * continues properly in net_core.c:process_data()
 		 */

@@ -21,7 +21,7 @@ zephyr_library_sources_ifdef(CONFIG_NET_STATISTICS_PPP ppp_stats.c)
 
 zephyr_library_sources_ifdef(CONFIG_NET_L2_PPP_MGMT ppp_mgmt.c)
 
-if(CONFIG_NET_IPV4)
+if(CONFIG_NET_IPV4 OR CONFIG_PPP_DIALUP)
   zephyr_library_sources_ifdef(CONFIG_NET_L2_PPP ipcp.c)
 endif()
 

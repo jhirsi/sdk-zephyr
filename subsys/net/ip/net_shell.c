@@ -4006,7 +4006,7 @@ static int cmd_net_ppp_status(const struct shell *shell, size_t argc,
 	PR("LCP ACK received    : %s\n", ctx->lcp.fsm.ack_received ?
 								"yes" : "no");
 
-#if defined(CONFIG_NET_IPV4)
+#if defined(CONFIG_NET_IPV4) || defined(CONFIG_PPP_DIALUP)
 	PR("IPCP state          : %s (%d)\n",
 	   ppp_state_str(ctx->ipcp.fsm.state), ctx->ipcp.fsm.state);
 	PR("IPCP retransmits    : %u\n", ctx->ipcp.fsm.retransmits);
