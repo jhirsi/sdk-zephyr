@@ -312,7 +312,7 @@ const char *ppp_option2str(enum ppp_protocol_type protocol,
 
 		break;
 
-#if defined(CONFIG_NET_IPV4)
+#if defined(CONFIG_NET_IPV4) || defined(CONFIG_PPP_DIALUP)
 	case PPP_IPCP:
 		switch (type) {
 		case IPCP_OPTION_RESERVED:

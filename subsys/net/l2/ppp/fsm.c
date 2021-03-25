@@ -26,7 +26,7 @@ struct ppp_context *ppp_fsm_ctx(struct ppp_fsm *fsm)
 {
 	if (fsm->protocol == PPP_LCP) {
 		return CONTAINER_OF(fsm, struct ppp_context, lcp.fsm);
-#if defined(CONFIG_NET_IPV4)
+#if defined(CONFIG_NET_IPV4) || defined(CONFIG_PPP_DIALUP)
 	} else if (fsm->protocol == PPP_IPCP) {
 		return CONTAINER_OF(fsm, struct ppp_context, ipcp.fsm);
 #endif
