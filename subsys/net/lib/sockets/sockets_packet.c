@@ -386,6 +386,9 @@ static const struct socket_op_vtable packet_sock_fd_op_vtable = {
 static bool packet_is_supported(int family, int type, int proto)
 {
 	if (((type == SOCK_RAW) && (proto == ETH_P_ALL)) ||
+#if defined(CONFIG_PPP_DIALUP)	
+		((type == SOCK_RAW) && (proto == IPPROTO_RAW)) ||	
+#endif
 	    ((type == SOCK_DGRAM) && (proto > 0))) {
 		return true;
 	}
