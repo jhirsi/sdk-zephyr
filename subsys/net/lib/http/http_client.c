@@ -21,7 +21,16 @@ LOG_MODULE_REGISTER(net_http, CONFIG_NET_HTTP_LOG_LEVEL);
 #include <stdlib.h>
 
 #include <net/net_ip.h>
+
+#if defined(CONFIG_POSIX_API)
+#include <posix/arpa/inet.h>
+#include <posix/unistd.h>
+#include <posix/netdb.h>
+#include <posix/sys/socket.h>
+#else
 #include <net/socket.h>
+#endif
+
 #include <net/http_client.h>
 
 #include "net_private.h"
