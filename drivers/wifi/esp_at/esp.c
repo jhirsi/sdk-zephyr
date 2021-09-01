@@ -252,7 +252,9 @@ MODEM_CMD_DEFINE(on_cmd_cipstamac)
 	return 0;
 }
 
+
 /* +CWLAP:(sec,ssid,rssi,channel) */
+/* with: CONFIG_WIFI_ESP_AT_SCAN_MAC_ADDRESS: +CWLAP:<ecn>,<ssid>,<rssi>,<mac>,<ch>*/
 MODEM_CMD_DEFINE(on_cmd_cwlap)
 {
 	struct esp_data *dev = CONTAINER_OF(data, struct esp_data,
@@ -276,8 +278,20 @@ MODEM_CMD_DEFINE(on_cmd_cwlap)
 	memcpy(res.ssid, argv[1], i);
 	res.ssid_length = i;
 	res.rssi = strtol(argv[2], NULL, 10);
-	res.channel = strtol(argv[3], NULL, 10);
 
+#if defined(CONFIG_WIFI_ESP_AT_SCAN_MAC_ADDRESS)
+	argv[3] = str_unquote(argv[3]);
+	i = strlen(argv[3]);
+	if (i > sizeof(res.mac)) {
+		i = sizeof(res.mac);
+	}
+	memcpy(res.mac, argv[3], i);
+
+	res.mac_length = i;
+	res.channel      = (argc > 4) ? strtol(argv[4], NULL, 10) : -1;
+#else
+	res.channel = strtol(argv[3], NULL, 10);
+#endif
 	if (dev->scan_cb) {
 		dev->scan_cb(dev->net_iface, 0, &res);
 	}
@@ -717,7 +731,11 @@ static void esp_mgmt_scan_work(struct k_work *work)
 	struct esp_data *dev;
 	int ret;
 	static const struct modem_cmd cmds[] = {
+#if defined(CONFIG_WIFI_ESP_AT_SCAN_MAC_ADDRESS)
+		MODEM_CMD("+CWLAP:", on_cmd_cwlap, 5U, ","),
+#else
 		MODEM_CMD("+CWLAP:", on_cmd_cwlap, 4U, ","),
+#endif
 	};
 
 	dev = CONTAINER_OF(work, struct esp_data, scan_work);
@@ -726,9 +744,20 @@ static void esp_mgmt_scan_work(struct k_work *work)
 	if (ret < 0) {
 		goto out;
 	}
-	ret = esp_cmd_send(dev, cmds, ARRAY_SIZE(cmds), "AT+CWLAP",
-			   ESP_SCAN_TIMEOUT);
+	ret = esp_cmd_send(dev, 
+#if defined(CONFIG_WIFI_ESP_AT_SCAN_PASSIVE)
+				cmds, ARRAY_SIZE(cmds), "AT+CWLAP=,,,1,,",
+#else
+			    	cmds, ARRAY_SIZE(cmds), "AT+CWLAP",
+#endif
+				ESP_SCAN_TIMEOUT);
 	esp_mode_flags_clear(dev, EDF_STA_LOCK);
+#if defined(CONFIG_WIFI_ESP_AT_SCAN_PASSIVE)
+	LOG_INF("ESP Wi-Fi passive scan: cmd = AT+CWLAP=,,,1,,");
+#else
+	LOG_INF("ESP Wi-Fi active scan: cmd = AT+CWLAP");
+#endif
+
 	if (ret < 0) {
 		LOG_ERR("Failed to scan: ret %d", ret);
 	}
@@ -925,8 +954,19 @@ static void esp_init_work(struct k_work *work)
 #endif
 		/* enable multiple socket support */
 		SETUP_CMD_NOHANDLE("AT+CIPMUX=1"),
+
+#if defined(CONFIG_WIFI_ESP_AT_SCAN_MAC_ADDRESS)
+		/* We need ecn,ssid,rssi,mac,channel */
+		SETUP_CMD_NOHANDLE("AT+CWLAPOPT=0,31"),
+#else
 		/* only need ecn,ssid,rssi,channel */
 		SETUP_CMD_NOHANDLE("AT+CWLAPOPT=0,23"),
+#endif
+#if defined(WIFI_ESP_AT_SCAN_PASSIVE)
+		SETUP_CMD_NOHANDLE("AT+CWLAP=,,,1,,"),
+#else
+		SETUP_CMD_NOHANDLE("AT+CWLAP"),
+#endif
 #if defined(CONFIG_WIFI_ESP_AT_VERSION_2_0)
 		SETUP_CMD_NOHANDLE(ESP_CMD_CWMODE(STA)),
 		SETUP_CMD_NOHANDLE("AT+CWAUTOCONN=0"),

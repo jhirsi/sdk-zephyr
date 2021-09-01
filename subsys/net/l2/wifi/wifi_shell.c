@@ -65,16 +65,17 @@ static void handle_wifi_scan_result(struct net_mgmt_event_callback *cb)
 
 	if (scan_result == 1U) {
 		print(context.shell, SHELL_NORMAL,
-		      "%-4s | %-32s %-5s | %-4s | %-4s | %-5s\n",
-		      "Num", "SSID", "(len)", "Chan", "RSSI", "Sec");
+		      "%-4s | %-32s %-5s | %-4s | %-4s | %-5s    | %-32s\n",
+		      "Num", "SSID", "(len)", "Chan", "RSSI", "Sec", "MAC");
 	}
 
 	print(context.shell, SHELL_NORMAL,
-	      "%-4d | %-32s %-5u | %-4u | %-4d | %-5s\n",
+	      "%-4d | %-32s %-5u | %-4u | %-4d | %-5s | %-32s\n",
 	      scan_result, entry->ssid, entry->ssid_length,
 	      entry->channel, entry->rssi,
 	      (entry->security == WIFI_SECURITY_TYPE_PSK ?
-	       "WPA/WPA2" : "Open"));
+	       "WPA/WPA2" : "Open    "),
+	       entry->mac);
 }
 
 static void handle_wifi_scan_done(struct net_mgmt_event_callback *cb)

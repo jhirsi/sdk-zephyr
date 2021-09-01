@@ -19,6 +19,8 @@ enum wifi_security_type {
 
 #define WIFI_SSID_MAX_LEN 32
 #define WIFI_PSK_MAX_LEN 64
+//b_jh:
+#define WIFI_MAC_MAX_LEN 64
 
 #define WIFI_CHANNEL_MAX 14
 #define WIFI_CHANNEL_ANY 255
