@@ -18,6 +18,10 @@ menuconfig NET_PPP
 
 if NET_PPP
 
+config NET_PPP_ASYNC_UART
+	bool "Asyncronous UART API is used"
+	depends on UART_ASYNC_API
+
 config NET_PPP_UART_NAME
 	string "UART device name the PPP is connected to"
 	depends on !MODEM_GSM_PPP
@@ -88,6 +92,28 @@ config PPP_NET_IF_NO_AUTO_START
 	help
 	  This option allows user to disable autostarting of the PPP interface
 	  immediately after initialization.
+
+if NET_PPP_ASYNC_UART
+
+config NET_PPP_ASYNC_UART_TX_BUF_LEN
+	int "Buffer length when writing to asynch UART"
+	default 2048
+	help
+	  This options sets the size of the UART TX buffer where data
+	  is being written from.
+
+config NET_PPP_ASYNC_UART_RX_RECOVERY_TIME
+	int "UART RX recovery timeout in milliseconds"
+	default 200
+	help
+	  The time that UART RX is in disabled state in case
+	  when we cannot receive more data.
+
+config NET_PPP_ASYNC_UART_RX_ENABLE_TIMEOUT
+	int "A timeout for uart_rx_enable()"
+	default 100
+
+endif # NET_PPP_ASYNC_UART
 
 module = NET_PPP
 module-dep = LOG

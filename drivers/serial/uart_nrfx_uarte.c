@@ -251,6 +251,7 @@ static void uarte_nrfx_isr_int(void *arg)
 	struct uarte_nrfx_data *data = get_dev_data(dev);
 
 	if (!data->int_driven) {
+		printk("no int_driven\n");
 		return;
 	}
 
@@ -1617,6 +1618,7 @@ static const struct uart_driver_api uart_nrfx_uarte_driver_api = {
 	.configure              = uarte_nrfx_configure,
 	.config_get             = uarte_nrfx_config_get,
 #endif /* CONFIG_UART_USE_RUNTIME_CONFIGURE */
+//jani: tästä näkee konffiksen. eli async api pitäs laittaa käyttöön
 #ifdef CONFIG_UART_ASYNC_API
 	.callback_set		= uarte_nrfx_callback_set,
 	.tx			= uarte_nrfx_tx,
