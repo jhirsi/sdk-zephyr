@@ -29,9 +29,8 @@ LOG_MODULE_REGISTER(net_ppp, LOG_LEVEL);
 #include <net/net_core.h>
 #include <sys/ring_buffer.h>
 #include <sys/crc.h>
-#if defined (CONFIG_NET_PPP_NRF_UARTE)
+#if defined (CONFIG_NET_PPP_ASYNC_UART)
 #include <stdio.h>
-#include <nrfx_uarte.h>
 #endif
 #include <drivers/uart.h>
 
@@ -48,11 +47,6 @@ enum ppp_driver_state {
 	STATE_HDLC_FRAME_ADDRESS,
 	STATE_HDLC_FRAME_DATA,
 };
-
-#if defined (CONFIG_NET_PPP_NRF_UARTE)
-#define UARTE_NODE DT_NODELABEL(uart0)
-static const nrfx_uarte_t uarte_inst = NRFX_UARTE_INSTANCE(0);
-#endif
 
 #define PPP_WORKQ_PRIORITY CONFIG_NET_PPP_RX_PRIORITY
 #define PPP_WORKQ_STACK_SIZE CONFIG_NET_PPP_RX_STACK_SIZE
@@ -71,7 +65,10 @@ struct ppp_driver_context {
 
 	/* ppp data is read into this buf */
 	uint8_t buf[UART_BUF_LEN];
-
+#if defined (CONFIG_NET_PPP_ASYNC_UART)
+	/* with async we use 2 rx buffers */
+	uint8_t buf2[UART_BUF_LEN];
+#endif
 	/* ppp buf use when sending data */
 	uint8_t send_buf[UART_BUF_LEN];
 
@@ -105,10 +102,17 @@ struct ppp_driver_context {
 
 static struct ppp_driver_context ppp_driver_context_data;
 
-#if defined (CONFIG_NET_PPP_NRF_UARTE)
+#if defined (CONFIG_NET_PPP_ASYNC_UART)
+static bool uarte_initialized;
+static bool enable_rx_retry;
 static K_SEM_DEFINE(uarte_rx_finished, 0, 1);
 static K_SEM_DEFINE(uarte_tx_finished, 0, 1);
-static bool uarte_initialized;
+
+static uint8_t buf_num = 1;
+
+static int ppp_async_uart_rx_enable(struct ppp_driver_context *context);
+
+#if 0
 
 static void uarte_handler(const nrfx_uarte_event_t *p_event, void *p_context)
 {
@@ -124,6 +128,114 @@ static void uarte_handler(const nrfx_uarte_event_t *p_event, void *p_context)
 		k_sem_give(&uarte_rx_finished);
 		k_sem_give(&uarte_tx_finished);
 	}
+}
+#endif
+
+static void uart_callback(const struct device *dev,
+			  struct uart_event *evt,
+			  void *user_data)
+{
+	struct ppp_driver_context *context = user_data;
+	uint8_t *p;
+	int err, ret, len;
+
+	switch (evt->type) {
+	case UART_TX_DONE:
+		LOG_INF("UART_TX_DONE: sent %d bytes", evt->data.tx.len);
+		k_sem_give(&uarte_tx_finished);
+		break;
+
+	case UART_TX_ABORTED:
+		LOG_ERR("Tx aborted");
+		k_sem_give(&uarte_tx_finished);
+		break;
+
+	case UART_RX_RDY:
+		LOG_INF("Received data %d bytes", evt->data.rx.len);
+		len = evt->data.rx.len;
+		p = evt->data.rx.buf + evt->data.rx.offset;
+	
+		if (ring_buf_space_get(&context->rx_ringbuf) < evt->data.rx.len) {
+			LOG_ERR("RX buffer overflow");
+			break;
+		}
+	
+		ret = ring_buf_put(&context->rx_ringbuf, p, len);
+		if (ret < evt->data.rx.len) {
+			LOG_ERR("Rx buffer doesn't have enough space. "
+				"Bytes pending: %d, written: %d",
+				evt->data.rx.len, ret);
+			break;
+		}
+			
+		k_work_submit_to_queue(&context->cb_workq, &context->cb_work);
+		break;
+
+	case UART_RX_BUF_REQUEST:
+	{
+		LOG_INF("UART_RX_BUF_REQUEST");
+
+		err = -1;
+
+		if (buf_num == 1) {
+			err = uart_rx_buf_rsp(dev, context->buf, sizeof(context->buf));
+			buf_num = 2;
+		} else if (buf_num == 2) {
+			err = uart_rx_buf_rsp(dev, context->buf2, sizeof(context->buf));
+			buf_num = 1;
+		}
+		if (err) {
+			LOG_WRN("UART RX buf rsp: %d", err);
+		}
+
+		break;
+	}
+
+	case UART_RX_BUF_RELEASED:
+		LOG_INF("UART_RX_BUF_RELEASED");
+		break;
+
+	case UART_RX_DISABLED:
+		/* TODO: flush tx data */
+		LOG_INF("UART_RX_DISABLED");
+		if (enable_rx_retry) {
+			ppp_async_uart_rx_enable(context);
+		}
+		break;
+
+	case UART_RX_STOPPED:
+		/* TODO: retry ?? */
+		LOG_INF("UART_RX_STOPPED: stop reason %d", evt->data.rx_stop.reason);
+
+		if (evt->data.rx_stop.reason != 0) {
+			enable_rx_retry = true;
+		}
+
+		break;
+	}
+}
+static int ppp_async_uart_rx_enable(struct ppp_driver_context *context )
+{
+	int err;
+	enum pm_device_state current_state = PM_DEVICE_STATE_ACTIVE;
+
+	err = pm_device_state_get(context->dev, &current_state);
+	if (current_state != PM_DEVICE_STATE_ACTIVE) {
+		LOG_ERR("NOT PM_DEVICE_STATE_ACTIVE");
+	}
+	err = uart_callback_set(context->dev, uart_callback, (void *)context);
+	if (err) {
+		LOG_ERR("Failed to set uart callback");
+	}
+
+	err = uart_rx_enable(context->dev, context->buf, sizeof(context->buf), 500);
+	if (err) {
+		LOG_ERR("Failed to enable uart RX");
+	}
+	enable_rx_retry = false;
+	buf_num = 2;
+	printk("uarte_initialized\n");
+	return err;
 }
 #endif
 
@@ -239,26 +351,22 @@ static int ppp_send_flush(struct ppp_driver_context *ppp, int off)
 
 	if (IS_ENABLED(CONFIG_GSM_MUX)) {
 		(void)uart_fifo_fill(ppp->dev, buf, off);
-	} else if (IS_ENABLED(CONFIG_NET_PPP_NRF_UARTE)) {
-#if defined(CONFIG_NET_PPP_NRF_UARTE)
-		int err;
+	} else if (IS_ENABLED(CONFIG_NET_PPP_ASYNC_UART)) {
+#if defined(CONFIG_NET_PPP_ASYNC_UART)
+		int ret;
 
-		printk("going to nrfx_uarte_tx() off %d\n", off);
-		err = nrfx_uarte_tx(&uarte_inst, buf, off);
-		if (err != NRFX_SUCCESS) {
-			printk("nrfx_uarte_tx() failed: 0x%08x\n", err);
-			return 0;
+		k_sem_take(&uarte_tx_finished, K_MSEC(1000));
+
+		ret = uart_tx(ppp->dev, buf, off, 2000);
+		if (ret) {
+			LOG_ERR("uart_tx failed, err %d", ret);			
+			k_sem_give(&uarte_tx_finished);
 		}
-		printk("returning OK from nrfx_uarte_tx(), err %d\n", err);
-
+#if 0
 		if (k_sem_take(&uarte_tx_finished, K_MSEC(100)) != 0) {
-			printk("going tonrfx_uarte_tx_abort\n");
-
-			nrfx_uarte_tx_abort(&uarte_inst);
-			if (k_sem_take(&uarte_tx_finished, K_MSEC(100)) != 0) {
-				printk("UARTE transfer timeout\n");
-			}
+			LOG_ERR("uart_tx timeout"); //TODO: not needed
 		}
+#endif
 #endif		
 	} else {
 		while (off--) {
@@ -310,7 +418,6 @@ static void ppp_handle_client(struct ppp_driver_context *ppp, uint8_t byte)
 
 	++ppp->client_index;
 	if (ppp->client_index >= (sizeof(CLIENT) - 1)) {
-		printk("Received complete CLIENT string");
 		offset = ppp_send_bytes(ppp, clientserver,
 					sizeof(CLIENTSERVER) - 1, 0);
 				
@@ -707,11 +814,8 @@ static int ppp_send(const struct device *dev, struct net_pkt *pkt)
 	byte = 0x7e;
 	send_off = ppp_send_bytes(ppp, &byte, 1, send_off);
 
-	printk("ppp_send 1\n");
 
 	(void)ppp_send_flush(ppp, send_off);
-	printk("ppp_send 2\n");
-
 
 	return 0;
 }
@@ -774,6 +878,7 @@ static int ppp_driver_init(const struct device *dev)
 
 #if !defined(CONFIG_NET_TEST)
 	ring_buf_init(&ppp->rx_ringbuf, sizeof(ppp->rx_buf), ppp->rx_buf);
+
 	k_work_init(&ppp->cb_work, ppp_isr_cb_work);
 
 	k_work_queue_start(&ppp->cb_workq, ppp_workq,
@@ -870,57 +975,13 @@ static void ppp_uart_flush(const struct device *dev)
 	}
 }
 
-#if defined (CONFIG_NET_PPP_NRF_UARTE)
-static void ppp_uarte_flush(void)
-{
-	nrfx_err_t err;
-	struct ppp_driver_context *ppp = &ppp_driver_context_data;
 
-	err = nrfx_uarte_rx(&uarte_inst, ppp->buf, sizeof(ppp->buf));
-	if (err != NRFX_SUCCESS) {
-		printk("nrfx_uarte_rx() failed: 0x%08x\n", err);
-	}
-}
 
-#define PPP_UARTE_RX_THREAD_PRIO K_PRIO_COOP(10) /* -6 */
-static void ppp_uarte_rx(void)
-{
-	nrfx_err_t err;
-	struct ppp_driver_context *ppp = &ppp_driver_context_data;
-
-read_data:
-	if (uarte_initialized) {
-		printk("going to nrfx_uarte_rx()\n");
-		/* Read the data from UARTE and pass to cb_work */
-		err = nrfx_uarte_rx(&uarte_inst, ppp->buf, sizeof(ppp->buf));
-		if (err != NRFX_SUCCESS) {
-			printk("nrfx_uarte_rx() failed: 0x%08x\n", err);
-		}
-		if (k_sem_take(&uarte_rx_finished, K_MSEC(1000)) != 0) {
-			nrfx_uarte_rx_abort(&uarte_inst);
-			if (k_sem_take(&uarte_rx_finished, K_MSEC(100)) != 0) {
-				printk("UARTE RX timeout\n");
-			}
-		}
-		k_work_submit_to_queue(&ppp->cb_workq, &ppp->cb_work);
-		k_sleep(K_MSEC(1000));
-		goto read_data;
-	}
-}
-
-K_THREAD_DEFINE(ppp_uarte_rx_thread, 2048,
-		ppp_uarte_rx, NULL, NULL, NULL,
-		PPP_UARTE_RX_THREAD_PRIO, 0, 0);
-
-#endif /* CONFIG_NET_PPP_NRF_UARTE */
-
-#if !defined (CONFIG_NET_PPP_NRF_UARTE)
+#if !defined (CONFIG_NET_PPP_ASYNC_UART)
 static void ppp_uart_isr(const struct device *uart, void *user_data)
 {
 	struct ppp_driver_context *context = user_data;
 	int rx = 0, ret;
-
-//TODO: read from uarte
 
 	/* get all of the data off UART as fast as we can */
 	while (uart_irq_update(uart) && uart_irq_rx_ready(uart)) {
@@ -940,7 +1001,7 @@ static void ppp_uart_isr(const struct device *uart, void *user_data)
 		k_work_submit_to_queue(&context->cb_workq, &context->cb_work);
 	}
 }
-#endif /* !CONFIG_NET_PPP_NRF_UARTE */
+#endif /* !CONFIG_NET_PPP_ASYNC_UART */
 #endif /* !CONFIG_NET_TEST */
 
 static int ppp_start(const struct device *dev)
@@ -982,12 +1043,12 @@ static int ppp_start(const struct device *dev)
 		}
 
 		LOG_INF("Initializing PPP to use %s", dev_name);
-#if !defined (CONFIG_NET_PPP_NRF_UARTE)
 		context->dev = device_get_binding(dev_name);
 		if (!context->dev) {
 			LOG_ERR("Cannot find dev %s", dev_name);
 			return -ENODEV;
 		}
+#if !defined (CONFIG_NET_PPP_ASYNC_UART)
 		uart_irq_rx_disable(context->dev);
 		uart_irq_tx_disable(context->dev);
 		ppp_uart_flush(context->dev);
@@ -995,41 +1056,30 @@ static int ppp_start(const struct device *dev)
 						context);
 		uart_irq_rx_enable(context->dev);
 #endif
-#if defined (CONFIG_NET_PPP_NRF_UARTE)
-	/* UART pins are defined in "nrf9160dk_nrf9160.dts". */
-	const nrfx_uarte_config_t config = {
-		.pseltxd = DT_PROP(DT_NODELABEL(uart0), tx_pin),
-		.pselrxd = DT_PROP(DT_NODELABEL(uart0), rx_pin),
-//		.pselcts = NRF_UARTE_PSEL_DISCONNECTED,
-//		.pselrts = NRF_UARTE_PSEL_DISCONNECTED,
-
-//		.hal_cfg.hwfc = NRF_UARTE_HWFC_DISABLED,
-//		.hal_cfg.parity = NRF_UARTE_PARITY_EXCLUDED,
-		.baudrate = NRF_UARTE_BAUDRATE_1000000,
-
-		/* IRQ handler not used. Blocking mode.*/
-//		.interrupt_priority = NRFX_UARTE_DEFAULT_CONFIG_IRQ_PRIORITY,
-		//.p_context = context,
-	};
-	nrfx_uarte_config_t uarte_config = NRFX_UARTE_DEFAULT_CONFIG(
-		/* Take pin numbers from devicetree. */
-		DT_PROP(UARTE_NODE, tx_pin),
-		DT_PROP(UARTE_NODE, rx_pin));
-//	uarte_config.baudrate = NRF_UARTE_BAUDRATE_1000000;	
+#if defined (CONFIG_NET_PPP_ASYNC_UART)
 	int err;
+	uint32_t start_time;
 
-		printk("going nrfx_uarte_init()\n");
 
-	/* Initialize nrfx UARTE driver in non-blocking mode. */
-	err = nrfx_uarte_init(&uarte_inst, &uarte_config, uarte_handler);
-	if (err != NRFX_SUCCESS) {
-		printk("nrfx_uarte_init() failed: 0x%08x\n", err);
-		return -1;
-	}
-	printk("nrfx_uarte_init() OK: 0x%08x\n", err);
+	start_time = k_uptime_get_32();
+	do {
+		err = uart_err_check(context->dev);
+		if (err) {
+			uint32_t now = k_uptime_get_32();
 
-	uarte_initialized = true;
-	ppp_uarte_flush();
+			if (now - start_time > 1000) {
+				LOG_ERR("UART check failed: %d", err);
+			}
+			k_sleep(K_MSEC(10));
+		}
+	} while (err);
+
+
+	/* Power on UART module */
+	//pm_device_state_set(context->dev, PM_DEVICE_STATE_ACTIVE);
+	k_sem_give(&uarte_tx_finished);
+		
+	ppp_async_uart_rx_enable(context);
 #endif
 	}
 #endif /* !CONFIG_NET_TEST */

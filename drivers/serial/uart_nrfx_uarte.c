@@ -45,10 +45,6 @@ LOG_MODULE_REGISTER(uart_nrfx_uarte, LOG_LEVEL_ERR);
 	#define UARTE_INTERRUPT_DRIVEN	1
 #endif
 
-#if !defined(CONFIG_UART_0_ASYNC)
-#error "why here?"
-#endif
-
 #if	(defined(CONFIG_UART_0_NRF_UARTE) && !defined(CONFIG_UART_0_ASYNC)) || \
 	(defined(CONFIG_UART_1_NRF_UARTE) && !defined(CONFIG_UART_1_ASYNC)) || \
 	(defined(CONFIG_UART_2_NRF_UARTE) && !defined(CONFIG_UART_2_ASYNC)) || \
@@ -277,8 +273,6 @@ static void uarte_nrfx_isr_int(void *arg)
 
 	if (data->int_driven->cb) {
 		data->int_driven->cb(dev, data->int_driven->cb_data);
-	} else {
-		printk("NO CALLBACK!!!\n");
 	}
 #endif /* UARTE_INTERRUPT_DRIVEN */
 }
@@ -1634,7 +1628,6 @@ static const struct uart_driver_api uart_nrfx_uarte_driver_api = {
 	.rx_disable		= uarte_nrfx_rx_disable,
 #endif /* CONFIG_UART_ASYNC_API */
 #ifdef UARTE_INTERRUPT_DRIVEN
-#error "jaNIIII"
 	.fifo_fill		= uarte_nrfx_fifo_fill,
 	.fifo_read		= uarte_nrfx_fifo_read,
 	.irq_tx_enable		= uarte_nrfx_irq_tx_enable,

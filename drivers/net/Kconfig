@@ -18,8 +18,9 @@ menuconfig NET_PPP
 
 if NET_PPP
 
-config NET_PPP_NRF_UARTE
-	bool "NRF UARTE"
+config NET_PPP_ASYNC_UART
+	bool "Async UART is used"
+	depends on UART_ASYNC_API
 
 config NET_PPP_UART_NAME
 	string "UART device name the PPP is connected to"
