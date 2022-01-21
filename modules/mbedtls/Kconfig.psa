@@ -114,6 +114,7 @@ menu "PSA AEAD support"
 
 config PSA_HAS_AEAD_SUPPORT
 	bool
+	default y
 	depends on PSA_WANT_ALG_CCM || \
 		   PSA_WANT_ALG_GCM || \
 		   PSA_WANT_ALG_CHACHA20_POLY1305
