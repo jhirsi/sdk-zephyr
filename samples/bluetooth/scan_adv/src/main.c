@@ -8,6 +8,7 @@
 
 #include <zephyr/types.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/printk.h>
 #include <sys/util.h>
 
@@ -15,15 +16,28 @@
 #include <bluetooth/hci.h>
 
 static uint8_t mfg_data[] = { 0xff, 0xff, 0x00 };
+K_SEM_DEFINE(bt_initialized, 0, 1);
 
 static const struct bt_data ad[] = {
 	BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg_data, 3),
 };
 
-static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
-		    struct net_buf_simple *buf)
+static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
+			 struct net_buf_simple *ad)
 {
+	char dev[BT_ADDR_LE_STR_LEN];
+
 	mfg_data[2]++;
+
+	bt_addr_le_to_str(addr, dev, sizeof(dev));
+	printk("[DEVICE]: %s, AD evt type %u, AD data len %u, RSSI %i\n",
+	       dev, type, ad->len, rssi);
+}
+
+static void bt_ctrl_ble_ready(int err)
+{
+	printk("Bluetooth ready");
+	k_sem_give(&bt_initialized);
 }
 
 void main(void)
@@ -39,12 +53,12 @@ void main(void)
 	printk("Starting Scanner/Advertiser Demo\n");
 
 	/* Initialize the Bluetooth Subsystem */
-	err = bt_enable(NULL);
+	err = bt_enable(bt_ctrl_ble_ready);
 	if (err) {
 		printk("Bluetooth init failed (err %d)\n", err);
 		return;
 	}
-
+	k_sem_take(&bt_initialized, K_FOREVER);
 	printk("Bluetooth initialized\n");
 
 	err = bt_le_scan_start(&scan_param, scan_cb);
@@ -52,6 +66,8 @@ void main(void)
 		printk("Starting scanning failed (err %d)\n", err);
 		return;
 	}
+
+	printk("Bluetooth scan started\n");
 
 	do {
 		k_sleep(K_MSEC(400));

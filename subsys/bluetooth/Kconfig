@@ -102,6 +102,7 @@ menu "Broadcaster"
 config BT_BROADCASTER
 	bool "Broadcaster Role support"
 	default y if !BT_OBSERVER
+	select BT_CONN
 	help
 	  Select this for LE Broadcaster role support.
 
