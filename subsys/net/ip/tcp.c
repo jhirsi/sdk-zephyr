@@ -3376,6 +3376,10 @@ struct k_sem *net_tcp_tx_sem_get(struct net_context *context)
 {
 	struct tcp *conn = context->tcp;
 
+	if (conn == NULL) {
+		return NULL;
+	}
+
 	return &conn->tx_sem;
 }
 
