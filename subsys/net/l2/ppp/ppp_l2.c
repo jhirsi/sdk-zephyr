@@ -351,6 +351,8 @@ static void net_ppp_mgmt_evt_handler(struct net_mgmt_event_callback *cb, uint32_
 	if (net_if_l2(iface) != &NET_L2_GET_NAME(PPP)) {
 		return;
 	}
+	const struct ppp_api *ppp =
+		net_if_get_device(iface)->api;
 
 	ctx = net_if_l2_data(iface);
 
@@ -361,12 +363,17 @@ static void net_ppp_mgmt_evt_handler(struct net_mgmt_event_callback *cb, uint32_
 	}
 
 	if (mgmt_event == NET_EVENT_IF_UP) {
+		if (ppp->start) {
+			ppp->start(net_if_get_device(iface));
+		}
 		ppp_open(ctx);
 		return;
 	}
 
 	if (mgmt_event == NET_EVENT_IF_DOWN) {
-		ppp_close(ctx);
+		if (ppp->start) {
+			ppp->stop(net_if_get_device(iface));
+		}		ppp_close(ctx);
 		return;
 	}
 }
