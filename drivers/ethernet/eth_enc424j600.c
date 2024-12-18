@@ -786,7 +786,7 @@ static int enc424j600_init(const struct device *dev)
 
 static struct enc424j600_runtime enc424j600_0_runtime = {
 	.tx_rx_sem = Z_SEM_INITIALIZER(enc424j600_0_runtime.tx_rx_sem,
-				       1,  UINT_MAX),
+				       2,  UINT_MAX),
 	.int_sem  = Z_SEM_INITIALIZER(enc424j600_0_runtime.int_sem,
 				      0, UINT_MAX),
 };
