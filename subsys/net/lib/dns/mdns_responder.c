@@ -148,7 +148,7 @@ int setup_dst_addr(int sock, sa_family_t family,
 
 		ret = set_ttl_hop_limit(sock, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, 255);
 		if (ret < 0) {
-			NET_DBG("Cannot set %s multicast %s (%d)", "IPv6", "hoplimit", ret);
+			NET_ERR("Cannot set %s multicast %s (%d)", "IPv6", "hoplimit", ret);
 		}
 	} else {
 		return -EPFNOSUPPORT;
@@ -284,7 +284,7 @@ static int send_response(int sock,
 
 	ret = setup_dst_addr(sock, family, (struct sockaddr *)&dst, &dst_len);
 	if (ret < 0) {
-		NET_DBG("unable to set up the response address");
+		NET_ERR("unable to set up the response address");
 		return ret;
 	}
 
@@ -326,10 +326,12 @@ static int send_response(int sock,
 
 		ret = create_answer(sock, query, qtype, sizeof(struct in6_addr), (uint8_t *)addr);
 		if (ret != 0) {
+			NET_ERR("Cannot create %s response (%d)", "IPv6", ret);
 			return -ENOMEM;
 		}
 	} else {
 		/* TODO: support also service PTRs */
+		NET_WARN("Unsupported query type %d", qtype);
 		return -EINVAL;
 	}
 
@@ -566,9 +568,9 @@ static int dns_read(int sock,
 			continue;
 		}
 
-		NET_DBG("[%d] query %s/%s label %s (%d bytes)", queries,
+		NET_DBG("[%d] query %s/%s label %s (%d bytes) (our hostname %s)", queries,
 			dns_qtype_to_str(qtype), "IN",
-			result->data, ret);
+			result->data, ret, hostname);
 
 		/* If the query matches to our hostname, then send reply.
 		 * We skip the first dot, and make sure there is dot after
@@ -577,14 +579,18 @@ static int dns_read(int sock,
 		if (!strncasecmp(hostname, result->data + 1, hostname_len) &&
 		    (result->len - 1) >= hostname_len &&
 		    &(result->data + 1)[hostname_len] == lquery) {
-			NET_DBG("%s query to our hostname %s.local", "mDNS",
-				hostname);
-			send_response(sock, family, src_addr, addrlen,
-				      result, qtype);
-		} else if (IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD)
-			&& qtype == DNS_RR_TYPE_PTR) {
-			send_sd_response(sock, family, src_addr, addrlen,
-					 &dns_msg, result);
+			/* TODO Jani mun mielestä viimesin ehto on väärä koska hostname_len sisältää .local */
+			NET_DBG("%s query to our hostname %s.local", "mDNS", hostname);
+			send_response(sock, family, src_addr, addrlen, result, qtype);
+		} else if (IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD) && qtype == DNS_RR_TYPE_PTR) {
+			send_sd_response(sock, family, src_addr, addrlen, &dns_msg, result);
+		} else if (!strncasecmp(hostname, result->data + 1, hostname_len) &&
+		           (result->len - 1) >= hostname_len)
+			{
+				NET_DBG("%s STANS! query to our hostname %s", "mDNS", hostname);
+				send_response(sock, family, src_addr, addrlen, result, qtype);
+		} else {
+			NET_DBG("Query %s not for us", result->data);
 		}
 
 	} while (--queries);
@@ -607,8 +613,11 @@ static void iface_ipv6_cb(struct net_if *iface, void *user_data)
 
 	ret = net_ipv6_mld_join(iface, addr);
 	if (ret < 0) {
-		NET_DBG("Cannot join %s IPv6 multicast group (%d)",
-			net_sprint_ipv6_addr(addr), ret);
+		NET_WARN("Iface %p, cannot join %s IPv6 multicast group (%d)",
+			iface, net_sprint_ipv6_addr(addr), ret);
+	} else {
+		NET_INFO("Iface %p, joined %s IPv6 multicast group",
+			iface, net_sprint_ipv6_addr(addr));
 	}
 }
 
@@ -919,5 +928,6 @@ int mdns_responder_set_ext_records(const struct dns_sd_rec *records, size_t coun
 
 void mdns_init_responder(void)
 {
+	LOG_INF("Initing mDNS responder");
 	(void)mdns_responder_init();
 }
