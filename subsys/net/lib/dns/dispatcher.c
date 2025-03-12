@@ -109,6 +109,29 @@ static int recv_data(struct net_socket_service_event *pev)
 	int family, sock_error;
 	int ret = 0, len;
 
+	if (!pev) {
+		NET_ERR("No event");
+		return -EINVAL;
+	}
+	if (!pev->user_data) {
+		NET_ERR("No user data: pev->event.fd %d", pev->event.fd);
+		//printk("recv_data 1: pev->event.fd %d\n", pev->event.fd);
+
+		return -EINVAL;
+	}
+	if (!table[pev->event.fd].ctx) {
+		NET_ERR("No context for fd %d", pev->event.fd);
+		return -ENOENT;
+	}
+
+	NET_DBG("recv_data: pev->event.fd %d\n", pev->event.fd);
+
+	if (pev->event.fd < 0 || pev->event.fd >= CONFIG_ZVFS_OPEN_MAX) {
+		NET_ERR("Invalid fd %d", pev->event.fd);
+		return -EINVAL;
+	}
+
+
 	dispatcher = table[pev->event.fd].ctx;
 
 	k_mutex_lock(&dispatcher->lock, K_FOREVER);
