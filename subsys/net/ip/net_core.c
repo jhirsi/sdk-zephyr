@@ -144,7 +144,7 @@ static inline enum net_verdict process_data(struct net_pkt *pkt,
 		return net_canbus_socket_input(pkt);
 	}
 
-	NET_DBG("Unknown protocol family packet (0x%x)", family);
+	NET_ERR("Unknown protocol family packet (0x%x)", family);
 	return NET_DROP;
 }
 

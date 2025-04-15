@@ -522,11 +522,14 @@ static void tcp_ca_init(struct tcp *conn)
 static void tcp_ca_fast_retransmit(struct tcp *conn)
 {
 	tcp_new_reno_fast_retransmit(conn);
+	NET_ERR("tcp_ca_fast_retransmit!!!!!!!!!!!!!!");
 }
 
 static void tcp_ca_timeout(struct tcp *conn)
 {
 	tcp_new_reno_timeout(conn);
+	NET_ERR("tcp_ca_timeout!!!!!!!!!!!!!!");
+
 }
 
 static void tcp_ca_dup_ack(struct tcp *conn)
