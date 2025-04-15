@@ -301,7 +301,7 @@ static void ipv6_no_route_info(struct net_pkt *pkt,
 			       struct in6_addr *src,
 			       struct in6_addr *dst)
 {
-	NET_DBG("Will not route pkt %p ll src %s to dst %s between interfaces",
+	NET_WARN("Will not route pkt %p ll src %s to dst %s between interfaces",
 		pkt, net_sprint_ipv6_addr(src),
 		net_sprint_ipv6_addr(dst));
 }
@@ -331,6 +331,10 @@ static enum net_verdict ipv6_route_packet(struct net_pkt *pkt,
 		    (net_ipv6_is_ll_addr((struct in6_addr *)hdr->src) ||
 		     net_ipv6_is_ll_addr((struct in6_addr *)hdr->dst))) {
 			/* RFC 4291 ch 2.5.6 */
+			LOG_WRN("STANS! IPv6 packet %p dropped, "
+				"src %s dst %s",
+				pkt, net_sprint_ipv6_addr((struct in6_addr *)hdr->src),
+				net_sprint_ipv6_addr((struct in6_addr *)hdr->dst));
 			ipv6_no_route_info(pkt, (struct in6_addr *)hdr->src,
 					   (struct in6_addr *)hdr->dst);
 			goto drop;

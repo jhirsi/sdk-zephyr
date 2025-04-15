@@ -341,7 +341,7 @@ struct net_route_entry *net_route_add(struct net_if *iface,
 	NET_ASSERT(nexthop);
 
 	if (net_ipv6_addr_cmp(addr, net_ipv6_unspecified_address())) {
-		NET_DBG("Route cannot be towards unspecified address");
+		NET_WARN("Route cannot be towards unspecified address");
 		return NULL;
 	}
 
@@ -349,7 +349,7 @@ struct net_route_entry *net_route_add(struct net_if *iface,
 
 	nbr_nexthop = net_ipv6_nbr_lookup(iface, nexthop);
 	if (!nbr_nexthop) {
-		NET_DBG("No such neighbor %s found",
+		NET_WARN("No such neighbor %s found",
 			net_sprint_ipv6_addr(nexthop));
 		goto exit;
 	}
@@ -384,7 +384,7 @@ struct net_route_entry *net_route_add(struct net_if *iface,
 			goto exit;
 		}
 
-		NET_DBG("Old route to %s found",
+		NET_WARN("1: Old route to %s found",
 			net_sprint_ipv6_addr(nexthop_addr));
 
 		net_route_del(route);
@@ -419,6 +419,8 @@ struct net_route_entry *net_route_add(struct net_if *iface,
 			}
 		}
 
+		NET_WARN("2: Old route to %s found",
+			net_sprint_ipv6_addr(addr));
 		net_route_del(route);
 
 		nbr = nbr_new(iface, addr, prefix_len);
@@ -476,7 +478,7 @@ exit:
 
 static void route_expired(struct net_route_entry *route)
 {
-	NET_DBG("Route to %s expired",
+	NET_WARN("Route to %s expired",
 		net_sprint_ipv6_addr(&route->addr));
 
 	sys_slist_find_and_remove(&active_route_lifetime_timers,
@@ -1067,7 +1069,8 @@ int net_route_packet(struct net_pkt *pkt, struct in6_addr *nexthop)
 		 */
 		if (!memcmp(net_pkt_lladdr_src(pkt)->addr, lladdr->addr,
 				lladdr->len)) {
-			NET_ERR("Src ll and Dst ll are same");
+			NET_ERR("Src ll and Dst ll are same: %s",
+				net_sprint_ll_addr(lladdr->addr, lladdr->len));
 			err = -EINVAL;
 			goto error;
 		}
