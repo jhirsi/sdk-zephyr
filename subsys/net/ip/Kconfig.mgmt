@@ -95,6 +95,14 @@ config NET_MGMT_EVENT_INFO
 	  and listeners will then be able to get it. Such information depends
 	  on the type of event.
 
+if NET_MGMT_EVENT_INFO
+config NET_MGMT_EVENT_INFO_DEFAULT_DATA_SIZE
+	int "Default size of event information data"
+	default 32
+	help
+	  The default size of the data which can be passed along with an event.
+endif
+
 config NET_MGMT_EVENT_MONITOR
 	bool "Monitor network events from net shell"
 	depends on NET_SHELL && NET_MGMT_EVENT_INFO
