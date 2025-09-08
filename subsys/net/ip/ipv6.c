@@ -310,7 +310,7 @@ static void ipv6_no_route_info(struct net_pkt *pkt,
 			       struct in6_addr *src,
 			       struct in6_addr *dst)
 {
-	NET_DBG("Will not route pkt %p ll src %s to dst %s between interfaces",
+	NET_WARN("Will not route pkt %p ll src %s to dst %s between interfaces",
 		pkt, net_sprint_ipv6_addr(src),
 		net_sprint_ipv6_addr(dst));
 }

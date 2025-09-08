@@ -755,7 +755,7 @@ static struct in6_addr *check_route(struct net_if *iface,
 		 */
 		router = net_if_ipv6_router_find_default(NULL, dst);
 		if (!router) {
-			NET_DBG("No default route to %s",
+			NET_WARN("No default route to %s",
 				net_sprint_ipv6_addr(dst));
 
 			/* Try to send the packet anyway */
@@ -766,6 +766,9 @@ static struct in6_addr *check_route(struct net_if *iface,
 
 			return nexthop;
 		}
+		NET_INFO("%s: using default router! %s",
+			(__func__),
+			net_sprint_ipv6_addr(&router->address.in6_addr));
 
 		nexthop = &router->address.in6_addr;
 
@@ -876,10 +879,13 @@ use_interface_mtu:
 		nexthop = check_route(NULL, (struct in6_addr *)ip_hdr->dst,
 				      &try_route);
 		if (!nexthop) {
+			LOG_ERR("%s: no nexthop: NET_DROP", (__func__));
 			return NET_DROP;
 		}
 
 		if (try_route) {
+			LOG_INF("%s: no route to host %s, using default route",
+				(__func__), net_sprint_ipv6_addr(nexthop));
 			goto try_send;
 		}
 	}
@@ -2707,7 +2713,14 @@ static int handle_ra_input(struct net_icmp_ctx *ctx,
 			/* TODO: Start rs_timer on iface if no routers
 			 * at all available on iface.
 			 */
-			net_if_ipv6_router_rm(router);
+			/* TOD: jani, ei kai me voida meidän routeria ottaa pois? */
+			NET_WARN("%s: router %s would have been removed from iface %p - but Jani will keep it",
+				(__func__),
+				 net_sprint_ipv6_addr((struct in6_addr *)ip_hdr->src),
+				 net_pkt_iface(pkt));
+			net_if_ipv6_router_update_lifetime(router, 0xEEEE);
+
+			//net_if_ipv6_router_rm(router);
 		} else {
 			if (nbr) {
 				net_ipv6_nbr_data(nbr)->is_router = true;
