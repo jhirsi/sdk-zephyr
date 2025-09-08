@@ -720,6 +720,7 @@ static int modem_cellular_on_reset_pulse_state_leave(struct modem_cellular_data 
 	const struct modem_cellular_config *config =
 		(const struct modem_cellular_config *)data->dev->config;
 
+	LOG_DBG("%s: reset_gpio 0", (__func__));
 	gpio_pin_set_dt(&config->reset_gpio, 0);
 
 	if (modem_cellular_gpio_is_enabled(&config->wake_gpio)) {
@@ -735,6 +736,7 @@ static int modem_cellular_on_power_on_pulse_state_enter(struct modem_cellular_da
 	const struct modem_cellular_config *config =
 		(const struct modem_cellular_config *)data->dev->config;
 
+	LOG_DBG("%s: power_gpio to 1", (__func__));
 	gpio_pin_set_dt(&config->power_gpio, 1);
 	modem_cellular_start_timer(data, K_MSEC(config->power_pulse_duration_ms));
 	return 0;
@@ -762,6 +764,7 @@ static int modem_cellular_on_power_on_pulse_state_leave(struct modem_cellular_da
 	const struct modem_cellular_config *config =
 		(const struct modem_cellular_config *)data->dev->config;
 
+	LOG_DBG("%s: power_gpio to 0", (__func__));
 	gpio_pin_set_dt(&config->power_gpio, 0);
 	modem_cellular_stop_timer(data);
 	return 0;
@@ -1076,18 +1079,24 @@ static void modem_cellular_await_registered_event_handler(struct modem_cellular_
 		break;
 
 	case MODEM_CELLULAR_EVENT_TIMEOUT:
+		LOG_WRN("%s: MODEM_CELLULAR_EVENT_TIMEOUT when waiting registered", (__func__));
 		modem_chat_run_script_async(&data->chat, config->periodic_chat_script);
 		break;
 
 	case MODEM_CELLULAR_EVENT_REGISTERED:
+		LOG_INF("%s: MODEM_CELLULAR_EVENT_REGISTERED", (__func__));
 		modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_CARRIER_ON);
 		break;
 
 	case MODEM_CELLULAR_EVENT_SUSPEND:
 		modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_INIT_POWER_OFF);
 		break;
+	case MODEM_CELLULAR_EVENT_DEREGISTERED:
+		LOG_INF("%s: MODEM_CELLULAR_EVENT_DEREGISTERED", (__func__));
+		break;
 
 	default:
+		LOG_ERR("(%s): Unhandled event %d", (__func__), evt);
 		break;
 	}
 }
@@ -1255,6 +1264,7 @@ static int modem_cellular_on_power_off_pulse_state_enter(struct modem_cellular_d
 	const struct modem_cellular_config *config =
 		(const struct modem_cellular_config *)data->dev->config;
 
+	LOG_DBG("%s: power_gpio to 1", (__func__));
 	data->cmd_pipe = NULL;
 	gpio_pin_set_dt(&config->power_gpio, 1);
 	modem_cellular_start_timer(data, K_MSEC(config->power_pulse_duration_ms));
@@ -1279,6 +1289,7 @@ static int modem_cellular_on_power_off_pulse_state_leave(struct modem_cellular_d
 	const struct modem_cellular_config *config =
 		(const struct modem_cellular_config *)data->dev->config;
 
+	LOG_DBG("%s: power_gpio to 0", (__func__));
 	gpio_pin_set_dt(&config->power_gpio, 0);
 	modem_cellular_stop_timer(data);
 	return 0;
@@ -1809,6 +1820,7 @@ static int modem_cellular_init(const struct device *dev)
 	}
 
 	if (modem_cellular_gpio_is_enabled(&config->power_gpio)) {
+		LOG_DBG("%s: power_gpio to 0", (__func__));
 		gpio_pin_configure_dt(&config->power_gpio, GPIO_OUTPUT_INACTIVE);
 	}
 
