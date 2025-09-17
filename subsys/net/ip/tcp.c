@@ -527,6 +527,7 @@ static void tcp_ca_fast_retransmit(struct tcp *conn)
 static void tcp_ca_timeout(struct tcp *conn)
 {
 	tcp_new_reno_timeout(conn);
+
 }
 
 static void tcp_ca_dup_ack(struct tcp *conn)
