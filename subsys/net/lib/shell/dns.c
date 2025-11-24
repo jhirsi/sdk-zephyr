@@ -237,7 +237,7 @@ static int cmd_net_dns_query(const struct shell *sh, size_t argc, char *argv[])
 {
 
 #if defined(CONFIG_DNS_RESOLVER)
-#define DNS_TIMEOUT (MSEC_PER_SEC * 2) /* ms */
+#define DNS_TIMEOUT_CUSTOM (MSEC_PER_SEC * 6) /* 6 secs */
 	struct dns_resolve_context *ctx;
 	enum dns_query_type qtype = DNS_QUERY_TYPE_A;
 	char *host, *type = NULL;
@@ -286,7 +286,7 @@ static int cmd_net_dns_query(const struct shell *sh, size_t argc, char *argv[])
 	}
 
 	ret = dns_resolve_name(ctx, host, qtype, NULL, dns_result_cb,
-				(void *)sh, DNS_TIMEOUT);
+				(void *)sh, DNS_TIMEOUT_CUSTOM);
 	if (ret < 0) {
 		PR_WARNING("Cannot resolve '%s' (%d)\n", host, ret);
 	} else {
