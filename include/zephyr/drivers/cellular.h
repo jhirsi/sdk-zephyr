@@ -146,6 +146,9 @@ typedef int (*cellular_api_set_apn)(const struct device *dev, const char *apn);
 typedef int (*cellular_api_set_callback)(const struct device *dev, cellular_event_mask_t mask,
 					 cellular_event_cb_t cb, void *user_data);
 
+/** API for getting current operator */
+typedef int (*cellular_api_get_operator)(const struct device *dev, char *operator, size_t size);
+
 /** Cellular driver API */
 __subsystem struct cellular_driver_api {
 	cellular_api_configure_networks configure_networks;
@@ -155,6 +158,7 @@ __subsystem struct cellular_driver_api {
 	cellular_api_get_registration_status get_registration_status;
 	cellular_api_set_apn set_apn;
 	cellular_api_set_callback set_callback;
+	cellular_api_get_operator get_operator;
 };
 
 /**
@@ -340,6 +344,29 @@ static inline int cellular_set_callback(const struct device *dev, cellular_event
 	}
 
 	return api->set_callback(dev, mask, cb, user_data);
+}
+
+/**
+ * @brief Get current operator for the device
+ *
+ * @param dev Cellular network device instance
+ * @param operator Operator name string destination
+ * @param size Operator name string size
+ *
+ * @retval 0 if successful.
+ * @retval -ENOTSUP if API is not supported by cellular network device.
+ * @retval -ENODATA if modem does not provide info requested
+ * @retval Negative errno-code from chat module otherwise.
+ */
+static inline int cellular_get_operator(const struct device *dev, char *operator, size_t size)
+{
+	const struct cellular_driver_api *api = (const struct cellular_driver_api *)dev->api;
+
+	if (api->get_operator == NULL) {
+		return -ENOSYS;
+	}
+
+	return api->get_operator(dev, operator, size);
 }
 
 #ifdef __cplusplus

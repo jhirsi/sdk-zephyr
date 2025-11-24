@@ -42,6 +42,8 @@ LOG_MODULE_REGISTER(modem_cellular, CONFIG_MODEM_LOG_LEVEL);
 #define MODEM_CELLULAR_MAX_APN_CMDS          (2)
 #define MODEM_CELLULAR_APN_BUF_SIZE          (64)
 
+#define MODEM_CELLULAR_DATA_OPERATOR_SHORT_NAME_LEN     (65)
+
 /* Magic constants */
 #define CSQ_RSSI_UNKNOWN		     (99)
 #define CESQ_RSRP_UNKNOWN		     (255)
@@ -152,6 +154,8 @@ struct modem_cellular_data {
 	struct modem_chat_script_chat apn_chats[MODEM_CELLULAR_MAX_APN_CMDS];
 	struct modem_chat_script apn_script;
 	char apn_buf[MODEM_CELLULAR_MAX_APN_CMDS][MODEM_CELLULAR_APN_BUF_SIZE];
+	
+	uint8_t operator_name[MODEM_CELLULAR_DATA_OPERATOR_SHORT_NAME_LEN];	
 
 	/* PPP */
 	struct modem_ppp *ppp;
@@ -558,6 +562,18 @@ static void modem_cellular_chat_on_imsi(struct modem_chat *chat, char **argv, ui
 	modem_cellular_emit_modem_info(data, CELLULAR_MODEM_INFO_SIM_IMSI);
 }
 
+static void modem_cellular_chat_on_cops(struct modem_chat *chat, char **argv, uint16_t argc,
+					void *user_data)
+{
+	struct modem_cellular_data *data = (struct modem_cellular_data *)user_data;
+
+	if (argc >= 3) {
+		strncpy(data->operator_name, argv[3], sizeof(data->operator_name) - 1);
+	} else {
+		data->operator_name[0] = '\0';
+	}
+}
+
 static bool modem_cellular_is_registered(struct modem_cellular_data *data)
 {
 	return (data->registration_status_gsm == CELLULAR_REGISTRATION_REGISTERED_HOME)
@@ -611,6 +627,7 @@ MODEM_CHAT_MATCH_DEFINE(imei_match, "", "", modem_cellular_chat_on_imei);
 MODEM_CHAT_MATCH_DEFINE(cgmm_match, "", "", modem_cellular_chat_on_cgmm);
 MODEM_CHAT_MATCH_DEFINE(csq_match, "+CSQ: ", ",", modem_cellular_chat_on_csq);
 MODEM_CHAT_MATCH_DEFINE(cesq_match, "+CESQ: ", ",", modem_cellular_chat_on_cesq);
+MODEM_CHAT_MATCH_DEFINE(cops_match, "+COPS: ", ",", modem_cellular_chat_on_cops);
 MODEM_CHAT_MATCH_DEFINE(qccid_match __maybe_unused, "+QCCID: ", "", modem_cellular_chat_on_iccid);
 MODEM_CHAT_MATCH_DEFINE(iccid_match __maybe_unused, "+ICCID: ", "", modem_cellular_chat_on_iccid);
 MODEM_CHAT_MATCH_DEFINE(ccid_match __maybe_unused, "+CCID: ", "", modem_cellular_chat_on_iccid);
@@ -1300,6 +1317,7 @@ static void modem_cellular_await_registered_event_handler(struct modem_cellular_
 		break;
 
 	case MODEM_CELLULAR_EVENT_SUSPEND:
+		LOG_INF("%s: MODEM_CELLULAR_EVENT_SUSPEND", (__func__));
 		modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_INIT_POWER_OFF);
 		break;
 	case MODEM_CELLULAR_EVENT_RING:
@@ -2045,12 +2063,39 @@ static int modem_cellular_set_callback(const struct device *dev, cellular_event_
 	return ret;
 }
 
+MODEM_CHAT_SCRIPT_CMDS_DEFINE(get_operator_cops_chat_script_cmds,
+			      MODEM_CHAT_SCRIPT_CMD_RESP("AT+COPS?", cops_match),
+			      MODEM_CHAT_SCRIPT_CMD_RESP("", ok_match));
+
+MODEM_CHAT_SCRIPT_DEFINE(get_operator_chat_script, get_operator_cops_chat_script_cmds,
+			 abort_matches, modem_cellular_chat_callback_handler, 2);
+
+static int modem_cellular_get_operator(const struct device *dev, char *operator, size_t size)
+{
+	int ret = -ENOTSUP;
+	struct modem_cellular_data *data = (struct modem_cellular_data *)dev->data;
+
+	if (size < sizeof(data->operator_name)) {
+		return -ENOMEM;
+	}
+	/* Run chat script */
+	ret = modem_chat_run_script(&data->chat, &get_operator_chat_script);
+	if (ret < 0) {
+		return ret;
+	}
+
+	strncpy(operator, &data->operator_name[0], sizeof(data->operator_name));
+
+	return ret;
+}
+
 static DEVICE_API(cellular, modem_cellular_api) = {
 	.get_signal = modem_cellular_get_signal,
 	.get_modem_info = modem_cellular_get_modem_info,
 	.get_registration_status = modem_cellular_get_registration_status,
 	.set_apn = modem_cellular_set_apn,
 	.set_callback = modem_cellular_set_callback,
+	.get_operator = modem_cellular_get_operator,	
 };
 
 #ifdef CONFIG_PM_DEVICE
