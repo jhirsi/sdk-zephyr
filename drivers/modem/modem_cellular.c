@@ -683,12 +683,36 @@ static int append_apn_cmd(struct modem_cellular_data *data, uint8_t *steps, cons
 	return 0;
 }
 
+static const char *modem_cellular_apn_pdp_type_str(void)
+{
+	if (IS_ENABLED(CONFIG_MODEM_CELLULAR_APN_DEFAULT_TYPE_IPV4)) {
+		return "IP";
+	} else if (IS_ENABLED(CONFIG_MODEM_CELLULAR_APN_DEFAULT_TYPE_IPV6)) {
+		return "IPV6";
+	} else if (IS_ENABLED(CONFIG_MODEM_CELLULAR_APN_DEFAULT_TYPE_IPV4V6)) {
+		return "IPV4V6";
+	}
+	return "IP";
+}
+
 static void modem_cellular_build_apn_script(struct modem_cellular_data *data)
 {
 	uint8_t steps = 0;
+	char cgdc_cmd_fmt[MODEM_CELLULAR_APN_BUF_SIZE];
+	int n;
+	int ret;
 
 	/* Mandatory PDP context */
-	append_apn_cmd(data, &steps, "AT+CGDCONT=1,\"IP\",\"%s\"", data->apn);
+	n = snprintk(cgdc_cmd_fmt, sizeof(cgdc_cmd_fmt), "AT+CGDCONT=%d,\"%s\",\"%%s\"",
+		     CONFIG_MODEM_CELLULAR_APN_DEFAULT_CID, modem_cellular_apn_pdp_type_str());
+	if (n > 0 && n < sizeof(cgdc_cmd_fmt)) {
+		ret = append_apn_cmd(data, &steps, cgdc_cmd_fmt, data->apn);
+		if (ret < 0) {
+			LOG_ERR("Failed to append CGDCONT APN cmd: %d", ret);
+		}
+	} else {
+		LOG_ERR("Failed to build CGDCONT cmd (n=%d, buf_sz=%zu)", n, sizeof(cgdc_cmd_fmt));
+	}
 
 	/* Vendor‑specific extras */
 #if DT_HAS_COMPAT_STATUS_OKAY(swir_hl7800)

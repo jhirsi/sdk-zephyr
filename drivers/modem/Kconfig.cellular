@@ -56,6 +56,29 @@ config MODEM_CELLULAR_APN
 	  If left empty the driver will wait for the application to call
 	  cellular_set_apn() before it proceeds to the dial phase.
 
+choice MODEM_CELLULAR_APN_DEFAULT_TYPE
+	prompt "PDP type"
+	default MODEM_CELLULAR_APN_DEFAULT_TYPE_IPV4
+
+config MODEM_CELLULAR_APN_DEFAULT_TYPE_IPV4
+	bool "IPv4"
+
+config MODEM_CELLULAR_APN_DEFAULT_TYPE_IPV6
+	bool "IPv6"
+
+config MODEM_CELLULAR_APN_DEFAULT_TYPE_IPV4V6
+	bool "IPv4v6"
+
+endchoice
+
+config MODEM_CELLULAR_APN_DEFAULT_CID
+	int "Default PDP context identifier (CID)"
+	default 1
+	help
+	  PDP context identifier used when configuring the APN with AT+CGDCONT.
+	  Many external modems use CID 1 by default, while some setups may require
+	  CID 0 or another value.
+
 config MODEM_CELLULAR_PERIODIC_SCRIPT_MS
 	int "Periodic script interval in milliseconds"
 	default 2000
