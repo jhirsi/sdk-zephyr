@@ -116,6 +116,12 @@ void ppp_link_terminated(struct ppp_context *ctx)
 {
 	k_sem_give(&ctx->wait_ppp_link_terminated);
 
+	/* Always reset LCP so next net_if_up() can restart (ppp_fsm_lower_up/open
+	 * require INITIAL or CLOSED, not STOPPED). Required when phase was set to
+	 * DEAD earlier (e.g. nrfconnect commit c309869: ESTABLISH->DEAD in lcp_close).
+	 */
+	ppp_change_state(&ctx->lcp.fsm, PPP_INITIAL);
+
 	if (ctx->phase == PPP_DEAD) {
 		return;
 	}
