@@ -172,6 +172,15 @@ static void lcp_close(struct ppp_context *ctx, const uint8_t *reason)
 	}
 
 	ppp_fsm_close(&ctx->lcp.fsm, reason);
+
+	/* If FSM was already in a terminal state, finished callback is never called.
+	 * Notify so ppp_lcp_close() waiter can complete and net_if_down() clears NET_IF_UP.
+	 */
+	if (ctx->lcp.fsm.state == PPP_INITIAL ||
+	    ctx->lcp.fsm.state == PPP_CLOSED ||
+	    ctx->lcp.fsm.state == PPP_STOPPED) {
+		ppp_link_terminated(ctx);
+	}
 }
 
 static void lcp_down(struct ppp_fsm *fsm)
