@@ -381,7 +381,7 @@ static int enc424j600_rx(const struct device *dev)
 	if (frm_len > NET_ETH_MAX_FRAME_SIZE) {
 		LOG_ERR("Maximum frame length exceeded");
 		eth_stats_update_errors_rx(context->iface);
-		goto done;
+		goto rx_hw_finish;
 	}
 
 	/* Get the frame from the buffer */
@@ -390,7 +390,7 @@ static int enc424j600_rx(const struct device *dev)
 	if (!pkt) {
 		LOG_ERR("Could not allocate rx buffer");
 		eth_stats_update_errors_rx(context->iface);
-		goto done;
+		goto rx_hw_finish;
 	}
 
 	pkt_buf = pkt->buffer;
@@ -421,11 +421,18 @@ static int enc424j600_rx(const struct device *dev)
 		pkt_buf = pkt_buf->frags;
 	} while (frm_len > 0);
 
+	/* net_recv_data() may send (e.g. ICMPv6 NA) -> enc424j600_tx(); do not hold
+	 * tx_rx_sem across it or the same thread can deadlock on a single permit.
+	 */
+	k_sem_give(&context->tx_rx_sem);
+
 	if (net_recv_data(context->iface, pkt) < 0) {
 		net_pkt_unref(pkt);
 	}
 
-done:
+	k_sem_take(&context->tx_rx_sem, K_FOREVER);
+
+rx_hw_finish:
 	if (context->next_pkt_ptr == ENC424J600_RXSTART) {
 		tmp = ENC424J600_RXEND - 1;
 		LOG_DBG("wrap back");
