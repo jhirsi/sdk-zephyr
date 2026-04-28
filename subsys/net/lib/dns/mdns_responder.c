@@ -25,11 +25,13 @@ LOG_MODULE_REGISTER(net_mdns_responder, CONFIG_MDNS_RESPONDER_LOG_LEVEL);
 
 #include <zephyr/random/random.h>
 #include <zephyr/net/mld.h>
+#include <zephyr/net/net_context.h>
 #include <zephyr/net/net_core.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/net_log.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/net/dns_resolve.h>
+#include <zephyr/net/socket.h>
 #include <zephyr/net/socket_service.h>
 #include <zephyr/net/igmp.h>
 
@@ -409,7 +411,8 @@ static int send_response(int sock,
 			 struct net_sockaddr *src_addr,
 			 size_t addrlen,
 			 struct net_buf *query,
-			 enum dns_rr_type qtype)
+			 enum dns_rr_type qtype,
+			 struct net_if *recv_if)
 {
 	struct net_if *iface;
 	net_socklen_t dst_len;
@@ -424,7 +427,12 @@ static int send_response(int sock,
 		return ret;
 	}
 
-	if (family == NET_AF_INET6) {
+	/* Use the interface the query arrived on (per-socket BINDTODEVICE) so
+	 * A/AAAA records advertise addresses on that link.
+	 */
+	if (recv_if != NULL) {
+		iface = recv_if;
+	} else if (family == NET_AF_INET6) {
 		iface = net_if_ipv6_select_src_iface(&net_sin6(src_addr)->sin6_addr);
 	} else {
 		iface = net_if_ipv4_select_src_iface(&net_sin(src_addr)->sin_addr);
@@ -457,7 +465,8 @@ static void send_sd_response(int sock,
 			     struct net_sockaddr *src_addr,
 			     size_t addrlen,
 			     struct dns_msg_t *dns_msg,
-			     struct net_buf *result)
+			     struct net_buf *result,
+			     struct net_if *recv_if)
 {
 	struct net_if *iface;
 	net_socklen_t dst_len;
@@ -506,7 +515,9 @@ static void send_sd_response(int sock,
 		return;
 	}
 
-	if (family == NET_AF_INET6) {
+	if (recv_if != NULL) {
+		iface = recv_if;
+	} else if (family == NET_AF_INET6) {
 		iface = net_if_ipv6_select_src_iface(&net_sin6(src_addr)->sin6_addr);
 	} else {
 		iface = net_if_ipv4_select_src_iface(&net_sin(src_addr)->sin_addr);
@@ -619,7 +630,8 @@ static int dns_read(int sock,
 		    struct net_buf *dns_data,
 		    size_t len,
 		    struct net_sockaddr *src_addr,
-		    size_t addrlen)
+		    size_t addrlen,
+		    struct net_if *recv_if)
 {
 	/* Helper struct to track the dns msg received from the server */
 	const char *hostname = net_hostname_get();
@@ -696,11 +708,11 @@ static int dns_read(int sock,
 				family == NET_AF_INET ? "IPv4" : "IPv6", "query",
 				hostname, ".local");
 			send_response(sock, family, src_addr, addrlen,
-				      result, qtype);
+				      result, qtype, recv_if);
 		} else if (IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD)
 			&& qtype == DNS_RR_TYPE_PTR) {
 			send_sd_response(sock, family, src_addr, addrlen,
-					 &dns_msg, result);
+					 &dns_msg, result, recv_if);
 		}
 
 	} while (--queries);
@@ -1263,9 +1275,15 @@ static int dispatcher_cb(struct dns_socket_dispatcher *ctx, int sock,
 			 struct net_sockaddr *addr, size_t addrlen,
 			 struct net_buf *dns_data, size_t len)
 {
+	struct net_if *recv_if = NULL;
 	int ret;
 
-	ret = dns_read(sock, dns_data, len, addr, addrlen);
+	/* Use the bound iface so replies match the link the query arrived on. */
+	if (ctx->ifindex > 0) {
+		recv_if = net_if_get_by_index(ctx->ifindex);
+	}
+
+	ret = dns_read(sock, dns_data, len, addr, addrlen, recv_if);
 	if (ret < 0 && ret != -EINVAL && ret != -ENOENT) {
 		NET_DBG("%s read failed (%d)", "mDNS", ret);
 	}
