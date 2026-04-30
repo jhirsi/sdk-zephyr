@@ -17,6 +17,8 @@
 
 #include "dns_pack.h"
 
+struct net_if;
+
 /* TODO: Move these into Kconfig */
 #define DNS_SD_PTR_TTL 4500u
 #define DNS_SD_TXT_TTL 4500u
@@ -127,9 +129,15 @@ bool dns_sd_rec_match(const struct dns_sd_rec *record,
  * If there is no IPv6 address to advertise, then @p addr6 should be
  * NULL.
  *
+ * When @kconfig{CONFIG_MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA} is enabled and
+ * @p iface is non-NULL, the response includes one AAAA per suitable unicast
+ * IPv6 address on that interface. If none are found, @p addr6 is used when
+ * non-NULL. Otherwise only @p addr6 is used (legacy single-address behavior).
+ *
  * @param inst the DNS-SD record to advertise
  * @param addr4 pointer to the IPv4 address
- * @param addr6 pointer to the IPv6 address
+ * @param addr6 pointer to the IPv6 address (port check and AAAA fallback)
+ * @param iface interface for enumerating AAAA records, or NULL
  * @param buf output buffer
  * @param buf_size size of the output buffer
  *
@@ -138,7 +146,7 @@ bool dns_sd_rec_match(const struct dns_sd_rec *record,
  */
 int dns_sd_handle_ptr_query(const struct dns_sd_rec *inst,
 	const struct net_in_addr *addr4, const struct net_in6_addr *addr6,
-	uint8_t *buf, uint16_t buf_size);
+	struct net_if *iface, uint8_t *buf, uint16_t buf_size);
 
 /**
  * @brief Handle a Service Type Enumeration with DNS Service Discovery

@@ -16,6 +16,10 @@
 #include <zephyr/net/net_core.h>
 #include <zephyr/net/dns_sd.h>
 #include <zephyr/sys/util.h>
+/* NET_NATIVE_IPV6: required by Kconfig for MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA */
+#if IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA)
+#include <zephyr/net/net_if.h>
+#endif
 #include <zephyr/kernel.h>
 
 #include "dns_pack.h"
@@ -718,9 +722,71 @@ static inline bool port_in_use(uint16_t proto, uint16_t port, const struct net_i
 }
 #endif /* CONFIG_NET_TEST */
 
+#if IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA)
+struct dns_sd_aaaa_foreach_ctx {
+	const struct dns_sd_rec *inst;
+	uint8_t *buf;
+	uint16_t offset;
+	uint16_t buf_size;
+	uint16_t host_offset;
+	struct dns_header *rsp;
+	int err;
+	int count;
+};
+
+static void dns_sd_ptr_append_unicast_aaaa(struct net_if *iface, struct net_if_addr *ifaddr,
+					   void *user_data)
+{
+	struct dns_sd_aaaa_foreach_ctx *ctx = user_data;
+	int r;
+
+	ARG_UNUSED(iface);
+
+	if (ctx->err != 0) {
+		return;
+	}
+
+	if (!ifaddr->is_used) {
+		return;
+	}
+
+	if (ifaddr->address.family != NET_AF_INET6) {
+		return;
+	}
+
+	if (ifaddr->addr_state == NET_ADDR_DEPRECATED) {
+		return;
+	}
+
+	if (net_ipv6_is_addr_mcast(&ifaddr->address.in6_addr)) {
+		return;
+	}
+
+	if (net_ipv6_is_addr_unspecified(&ifaddr->address.in6_addr)) {
+		return;
+	}
+
+	if (net_ipv6_is_addr_loopback(&ifaddr->address.in6_addr)) {
+		return;
+	}
+
+	r = add_aaaa_record(ctx->inst, DNS_SD_AAAA_TTL, ctx->host_offset,
+			    ifaddr->address.in6_addr.s6_addr, ctx->buf, ctx->offset,
+			    ctx->buf_size - ctx->offset);
+	if (r < 0) {
+		ctx->err = r;
+		return;
+	}
+
+	ctx->rsp->arcount++;
+	ctx->offset += r;
+	ctx->count++;
+}
+#endif /* MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA */
 
 int dns_sd_handle_ptr_query(const struct dns_sd_rec *inst, const struct net_in_addr *addr4,
-			    const struct net_in6_addr *addr6, uint8_t *buf, uint16_t buf_size)
+			    const struct net_in6_addr *addr6, struct net_if *iface,
+			    uint8_t *buf, uint16_t buf_size)
 {
 	/*
 	 * RFC 6763 Section 12.1
@@ -745,6 +811,7 @@ int dns_sd_handle_ptr_query(const struct dns_sd_rec *inst, const struct net_in_a
 	struct dns_header *rsp = (struct dns_header *)buf;
 	uint32_t tmp;
 	int r;
+	bool ipv6_aaaa_done = false;
 
 	memset(rsp, 0, sizeof(*rsp));
 
@@ -801,7 +868,32 @@ int dns_sd_handle_ptr_query(const struct dns_sd_rec *inst, const struct net_in_a
 	rsp->arcount++;
 	offset += r;
 
-	if (addr6 != NULL) {
+#if IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA)
+	if (iface != NULL) {
+		struct dns_sd_aaaa_foreach_ctx aaaa_ctx = {
+			.inst = inst,
+			.buf = buf,
+			.offset = offset,
+			.buf_size = buf_size,
+			.host_offset = host_offset,
+			.rsp = rsp,
+			.err = 0,
+			.count = 0,
+		};
+
+		net_if_ipv6_addr_foreach(iface, dns_sd_ptr_append_unicast_aaaa, &aaaa_ctx);
+		if (aaaa_ctx.err < 0) {
+			return aaaa_ctx.err;
+		}
+
+		offset = aaaa_ctx.offset;
+		if (aaaa_ctx.count > 0) {
+			ipv6_aaaa_done = true;
+		}
+	}
+#endif /* MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA */
+
+	if (!ipv6_aaaa_done && addr6 != NULL) {
 		r = add_aaaa_record(inst, DNS_SD_AAAA_TTL, host_offset, addr6->s6_addr, buf, offset,
 				    buf_size - offset); /* LCOV_EXCL_LINE */
 		if (r < 0) {

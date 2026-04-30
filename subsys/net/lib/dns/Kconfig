@@ -291,6 +291,18 @@ config MDNS_RESPONDER_DNS_SD_SERVICE_TYPE_ENUMERATION
 	  performs DNS-SD Service Type Enumeration according to RFC 6763,
 	  Chapter 9. By doing so, Zephyr network services are discoverable
 	  using e.g. 'avahi-browse -t -r _services._dns-sd._udp.local'.
+
+config MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA
+	bool "DNS-SD PTR responses include all IPv6 unicast addresses"
+	default n
+	depends on NET_NATIVE_IPV6
+	help
+	  When enabled, mDNS DNS-SD PTR answers include one AAAA record per
+	  suitable unicast IPv6 address on the responding interface (for
+	  example link-local and global), not only the source-selected
+	  address. When disabled, only the single selected IPv6 address is
+	  advertised (legacy behavior).
+
 endif # MDNS_RESPONDER_DNS_SD
 
 module = MDNS_RESPONDER

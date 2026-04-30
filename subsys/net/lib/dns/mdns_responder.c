@@ -571,7 +571,11 @@ static void send_sd_response(int sock,
 					continue;
 				}
 			} else {
-				ret = dns_sd_handle_ptr_query(record, addr4, addr6,
+#if IS_ENABLED(CONFIG_MDNS_RESPONDER_DNS_SD_MULTIPLE_AAAA)
+				ret = dns_sd_handle_ptr_query(record, addr4, addr6, iface,
+#else
+				ret = dns_sd_handle_ptr_query(record, addr4, addr6, NULL,
+#endif
 						result->data, net_buf_max_len(result));
 				if (ret < 0) {
 					NET_DBG("dns_sd_handle_ptr_query() failed (%d)", ret);
