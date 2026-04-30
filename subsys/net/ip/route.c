@@ -408,7 +408,7 @@ struct net_route_entry *net_route_add(struct net_if *iface,
 
 			in6_addr_tmp = net_route_get_nexthop(route);
 			nbr = net_ipv6_nbr_lookup(iface, in6_addr_tmp);
-			if (nbr) {
+			if (nbr && nbr->idx != NET_NBR_LLADDR_UNKNOWN) {
 				llstorage = net_nbr_get_lladdr(nbr->idx);
 
 				NET_DBG("Removing the oldest route %s "
@@ -417,6 +417,11 @@ struct net_route_entry *net_route_add(struct net_if *iface,
 					net_sprint_ipv6_addr(in6_addr_tmp),
 					net_sprint_ll_addr(llstorage->addr,
 							   llstorage->len));
+			} else if (nbr) {
+				NET_DBG("Removing the oldest route %s "
+					"via %s [ll unknown]",
+					net_sprint_ipv6_addr(&route->addr),
+					net_sprint_ipv6_addr(in6_addr_tmp));
 			}
 		}
 
@@ -1078,6 +1083,12 @@ int net_route_packet(struct net_pkt *pkt, struct net_in6_addr *nexthop)
 
 	if (is_ll_addr_supported(nbr->iface) && is_ll_addr_supported(net_pkt_iface(pkt)) &&
 	    is_ll_addr_supported(net_pkt_orig_iface(pkt))) {
+		if (nbr->idx == NET_NBR_LLADDR_UNKNOWN) {
+			NET_DBG("Neighbor %s has no link-layer (idx unknown)",
+				net_sprint_ipv6_addr(nexthop));
+			err = -ESRCH;
+			goto error;
+		}
 		lladdr = net_nbr_get_lladdr(nbr->idx);
 		if (!lladdr) {
 			NET_DBG("Cannot find %s neighbor link layer address.",
