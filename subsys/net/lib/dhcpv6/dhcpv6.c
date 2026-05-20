@@ -37,6 +37,7 @@ struct dhcpv6_options_include {
 	bool clientid : 1;
 	bool serverid : 1;
 	bool elapsed_time : 1;
+	bool rapid_commit : 1;
 	bool ia_na : 1;
 	bool iaaddr : 1;
 	bool ia_pd : 1;
@@ -46,12 +47,15 @@ struct dhcpv6_options_include {
 
 static K_MUTEX_DEFINE(lock);
 
+static void dhcpv6_enter_state(struct net_if *iface, enum net_dhcpv6_state state);
+
 /* All_DHCP_Relay_Agents_and_Servers (ff02::1:2) */
 static const struct net_in6_addr all_dhcpv6_ra_and_servers = { { { 0xff, 0x02, 0, 0, 0, 0, 0, 0,
 							       0, 0, 0, 0, 0, 0x01, 0, 0x02 } } };
 
 static sys_slist_t dhcpv6_ifaces = SYS_SLIST_STATIC_INIT(&dhcpv6_ifaces);
 static struct k_work_delayable dhcpv6_timeout_work;
+static struct k_work dhcpv6_send_request_work;
 static struct net_mgmt_event_callback dhcpv6_mgmt_cb;
 
 const char *net_dhcpv6_state_name(enum net_dhcpv6_state state)
@@ -162,6 +166,32 @@ static void dhcpv6_reschedule(void)
 	k_work_reschedule(&dhcpv6_timeout_work, K_NO_WAIT);
 }
 
+/* Separate work item: Advertise is often processed from dhcpv6_timeout while
+ * Solicit is being sent; rescheduling dhcpv6_timeout_work in that context does
+ * not run the Request path until much later (if ever).
+ */
+static void dhcpv6_send_request_work_handler(struct k_work *work)
+{
+	struct net_if_dhcpv6 *current, *next;
+
+	ARG_UNUSED(work);
+
+	k_mutex_lock(&lock, K_FOREVER);
+
+	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&dhcpv6_ifaces, current, next, node) {
+		struct net_if *iface = CONTAINER_OF(
+			CONTAINER_OF(current, struct net_if_config, dhcpv6),
+			struct net_if, config);
+
+		if (iface->config.dhcpv6.state == NET_DHCPV6_SOLICITING &&
+		    iface->config.dhcpv6.server_preference >= 0) {
+			dhcpv6_enter_state(iface, NET_DHCPV6_REQUESTING);
+		}
+	}
+
+	k_mutex_unlock(&lock);
+}
+
 static int randomize_timeout(int multiplier, int timeout)
 {
 	int factor;
@@ -265,6 +295,11 @@ static int dhcpv6_add_option_serverid(struct net_pkt *pkt,
 	return ret;
 }
 
+
+static int dhcpv6_add_option_rapid_commit(struct net_pkt *pkt)
+{
+	return dhcpv6_add_option_header(pkt, DHCPV6_OPTION_CODE_RAPID_COMMIT, 0);
+}
 
 static int dhcpv6_add_option_elapsed_time(struct net_pkt *pkt, uint64_t since)
 {
@@ -434,24 +469,29 @@ static int dhcpv6_add_option_oro(struct net_pkt *pkt, uint16_t *codes,
 	return ret;
 }
 
-static size_t dhcpv6_calculate_message_size(struct dhcpv6_options_include *options)
+static size_t dhcpv6_calculate_message_size(struct net_if *iface,
+					    struct dhcpv6_options_include *options)
 {
 	size_t msg_size = sizeof(struct dhcpv6_msg_hdr);
 	uint8_t oro_cnt = 0;
 
 	if (options->clientid) {
 		msg_size += DHCPV6_OPTION_HEADER_SIZE;
-		msg_size += sizeof(struct net_dhcpv6_duid_storage);
+		msg_size += iface->config.dhcpv6.clientid.length;
 	}
 
 	if (options->serverid) {
 		msg_size += DHCPV6_OPTION_HEADER_SIZE;
-		msg_size += sizeof(struct net_dhcpv6_duid_storage);
+		msg_size += iface->config.dhcpv6.serverid.length;
 	}
 
 	if (options->elapsed_time) {
 		msg_size += DHCPV6_OPTION_HEADER_SIZE;
 		msg_size += DHCPV6_OPTION_ELAPSED_TIME_SIZE;
+	}
+
+	if (options->rapid_commit) {
+		msg_size += DHCPV6_OPTION_HEADER_SIZE;
 	}
 
 	if (options->ia_na) {
@@ -515,6 +555,13 @@ static int dhcpv6_add_options(struct net_if *iface, struct net_pkt *pkt,
 	if (options->elapsed_time) {
 		ret = dhcpv6_add_option_elapsed_time(
 				pkt, iface->config.dhcpv6.exchange_start);
+		if (ret < 0) {
+			goto fail;
+		}
+	}
+
+	if (options->rapid_commit) {
+		ret = dhcpv6_add_option_rapid_commit(pkt);
 		if (ret < 0) {
 			goto fail;
 		}
@@ -588,7 +635,7 @@ static struct net_pkt *dhcpv6_create_message(struct net_if *iface,
 		return NULL;
 	}
 
-	msg_size = dhcpv6_calculate_message_size(options);
+	msg_size = dhcpv6_calculate_message_size(iface, options);
 
 	pkt = net_pkt_alloc_with_buffer(iface, msg_size, NET_AF_INET6,
 					NET_IPPROTO_UDP, PKT_WAIT_TIME);
@@ -602,14 +649,25 @@ static struct net_pkt *dhcpv6_create_message(struct net_if *iface,
 		goto fail;
 	}
 
-	dhcpv6_generate_tid(iface);
-
 	if (dhcpv6_add_header(pkt, msg_type, iface->config.dhcpv6.tid) < 0) {
 		goto fail;
 	}
 
 	if (dhcpv6_add_options(iface, pkt, options) < 0) {
 		goto fail;
+	}
+
+	/* dhcpv6_calculate_message_size() must match bytes written; slack in the
+	 * buffer would make the UDP checksum cover uninitialized data.
+	 */
+	{
+		const size_t expected = sizeof(struct net_ipv6_hdr) +
+					sizeof(struct net_udp_hdr) + msg_size;
+		const size_t actual = net_pkt_get_len(pkt);
+
+		if (actual > expected) {
+			(void)net_pkt_remove_tail(pkt, actual - expected);
+		}
 	}
 
 	net_pkt_cursor_init(pkt);
@@ -630,6 +688,7 @@ static int dhcpv6_send_solicit(struct net_if *iface)
 	struct dhcpv6_options_include options = {
 		.clientid = true,
 		.elapsed_time = true,
+		.rapid_commit = IS_ENABLED(CONFIG_NET_DHCPV6_RAPID_COMMIT),
 		.ia_na = iface->config.dhcpv6.params.request_addr,
 		.ia_pd = iface->config.dhcpv6.params.request_prefix,
 		.oro = {
@@ -653,6 +712,20 @@ static int dhcpv6_send_solicit(struct net_if *iface)
 	return ret;
 }
 
+static bool dhcpv6_has_offered_addr(const struct net_if *iface)
+{
+	return iface->config.dhcpv6.params.request_addr &&
+	       !net_ipv6_addr_cmp(&iface->config.dhcpv6.addr,
+				  net_ipv6_unspecified_address());
+}
+
+static bool dhcpv6_has_offered_prefix(const struct net_if *iface)
+{
+	return iface->config.dhcpv6.params.request_prefix &&
+	       !net_ipv6_addr_cmp(&iface->config.dhcpv6.prefix,
+				  net_ipv6_unspecified_address());
+}
+
 static int dhcpv6_send_request(struct net_if *iface)
 {
 	int ret;
@@ -662,7 +735,9 @@ static int dhcpv6_send_request(struct net_if *iface)
 		.serverid = true,
 		.elapsed_time = true,
 		.ia_na = iface->config.dhcpv6.params.request_addr,
+		.iaaddr = dhcpv6_has_offered_addr(iface),
 		.ia_pd = iface->config.dhcpv6.params.request_prefix,
+		.iaprefix = dhcpv6_has_offered_prefix(iface),
 		.oro = {
 			DHCPV6_OPTION_CODE_SOL_MAX_RT,
 #if defined(CONFIG_NET_DHCPV6_OPTION_DNS_ADDRESS)
@@ -1465,6 +1540,7 @@ static void dhcpv6_enter_soliciting(struct net_if *iface)
 	iface->config.dhcpv6.retransmissions = 0;
 	iface->config.dhcpv6.server_preference = -1;
 	iface->config.dhcpv6.exchange_start = k_uptime_get();
+	dhcpv6_generate_tid(iface);
 
 	(void)dhcpv6_send_solicit(iface);
 	dhcpv6_set_timeout(iface, iface->config.dhcpv6.retransmit_timeout);
@@ -1487,6 +1563,7 @@ static void dhcpv6_enter_renewing(struct net_if *iface)
 		dhcpv6_initial_retransmit_time(DHCPV6_REN_TIMEOUT);
 	iface->config.dhcpv6.retransmissions = 0;
 	iface->config.dhcpv6.exchange_start = k_uptime_get();
+	dhcpv6_generate_tid(iface);
 
 	(void)dhcpv6_send_renew(iface);
 	dhcpv6_set_timeout(iface, iface->config.dhcpv6.retransmit_timeout);
@@ -1498,6 +1575,7 @@ static void dhcpv6_enter_rebinding(struct net_if *iface)
 		dhcpv6_initial_retransmit_time(DHCPV6_REB_TIMEOUT);
 	iface->config.dhcpv6.retransmissions = 0;
 	iface->config.dhcpv6.exchange_start = k_uptime_get();
+	dhcpv6_generate_tid(iface);
 
 	(void)dhcpv6_send_rebind(iface);
 	dhcpv6_set_timeout(iface, iface->config.dhcpv6.retransmit_timeout);
@@ -1509,6 +1587,7 @@ static void dhcpv6_enter_confirming(struct net_if *iface)
 		dhcpv6_initial_retransmit_time(DHCPV6_CNF_TIMEOUT);
 	iface->config.dhcpv6.retransmissions = 0;
 	iface->config.dhcpv6.exchange_start = k_uptime_get();
+	dhcpv6_generate_tid(iface);
 
 	(void)dhcpv6_send_confirm(iface);
 	dhcpv6_set_timeout(iface, iface->config.dhcpv6.retransmit_timeout);
@@ -1663,17 +1742,23 @@ static int dhcpv6_handle_advertise(struct net_if *iface, struct net_pkt *pkt,
 	       sizeof(iface->config.dhcpv6.serverid));
 	iface->config.dhcpv6.server_preference = server_preference;
 
-	/* DHCPv6 RFC8415, ch. 18.2.1, if client received Advertise
-	 * message with maximum preference, or after the first
-	 * retransmission period, it should proceed with the exchange,
-	 * w/o further wait.
-	 */
-	if (server_preference == DHCPV6_MAX_SERVER_PREFERENCE ||
-	    iface->config.dhcpv6.retransmissions > 0) {
-		/* Reschedule immediately */
-		dhcpv6_enter_state(iface, NET_DHCPV6_REQUESTING);
-		dhcpv6_reschedule();
+	if (iface->config.dhcpv6.params.request_addr) {
+		memcpy(&iface->config.dhcpv6.addr, &ia_na.iaaddr.addr,
+		       sizeof(iface->config.dhcpv6.addr));
 	}
+
+	if (iface->config.dhcpv6.params.request_prefix) {
+		memcpy(&iface->config.dhcpv6.prefix, &ia_pd.iaprefix.prefix,
+		       sizeof(iface->config.dhcpv6.prefix));
+		iface->config.dhcpv6.prefix_len = ia_pd.iaprefix.prefix_len;
+	}
+
+	/* Defer Request to the DHCPv6 work queue: net_send_data() must not run from
+	 * the RX thread (returns -EIO on drivers such as W5500).
+	 */
+	NET_INFO("DHCPv6 Advertise accepted on iface %d, scheduling Request",
+		net_if_get_by_iface(iface));
+	k_work_submit(&dhcpv6_send_request_work);
 
 	return 0;
 }
@@ -1689,10 +1774,16 @@ static int dhcpv6_handle_reply(struct net_if *iface, struct net_pkt *pkt,
 	bool rediscover = false;
 	int ret;
 
-	if (iface->config.dhcpv6.state != NET_DHCPV6_REQUESTING &&
+	if (iface->config.dhcpv6.state != NET_DHCPV6_SOLICITING &&
+	    iface->config.dhcpv6.state != NET_DHCPV6_REQUESTING &&
 	    iface->config.dhcpv6.state != NET_DHCPV6_CONFIRMING &&
 	    iface->config.dhcpv6.state != NET_DHCPV6_RENEWING &&
 	    iface->config.dhcpv6.state != NET_DHCPV6_REBINDING) {
+		return -EINVAL;
+	}
+
+	if (iface->config.dhcpv6.state == NET_DHCPV6_SOLICITING &&
+	    !IS_ENABLED(CONFIG_NET_DHCPV6_RAPID_COMMIT)) {
 		return -EINVAL;
 	}
 
@@ -1717,6 +1808,9 @@ static int dhcpv6_handle_reply(struct net_if *iface, struct net_pkt *pkt,
 		NET_ERR("Server ID missing");
 		return ret;
 	}
+
+	memcpy(&iface->config.dhcpv6.serverid, &duid,
+	       sizeof(iface->config.dhcpv6.serverid));
 
 	/* Verify TID. */
 	if (memcmp(iface->config.dhcpv6.tid, tid,
@@ -1936,6 +2030,10 @@ static enum net_verdict dhcpv6_input(struct net_conn *conn,
 		return NET_DROP;
 	}
 
+	if (iface->config.dhcpv6.state == NET_DHCPV6_DISABLED) {
+		return NET_DROP;
+	}
+
 	net_pkt_cursor_init(pkt);
 
 	if (net_pkt_skip(pkt, NET_IPV6UDPH_LEN)) {
@@ -1955,6 +2053,13 @@ static enum net_verdict dhcpv6_input(struct net_conn *conn,
 
 	NET_DBG("Received DHCPv6 packet [type=%d, tid=0x%02x%02x%02x]",
 		msg_type, tid[0], tid[1], tid[2]);
+
+	if (msg_type == DHCPV6_MSG_TYPE_ADVERTISE ||
+	    msg_type == DHCPV6_MSG_TYPE_REPLY) {
+		NET_INFO("DHCPv6 RX type=%d tid=0x%02x%02x%02x iface=%d state=%s",
+			msg_type, tid[0], tid[1], tid[2], net_if_get_by_iface(iface),
+			net_dhcpv6_state_name(iface->config.dhcpv6.state));
+	}
 
 	switch (msg_type) {
 	case DHCPV6_MSG_TYPE_ADVERTISE:
@@ -2374,6 +2479,7 @@ int net_dhcpv6_init(void)
 	}
 
 	k_work_init_delayable(&dhcpv6_timeout_work, dhcpv6_timeout);
+	k_work_init(&dhcpv6_send_request_work, dhcpv6_send_request_work_handler);
 	net_mgmt_init_event_callback(&dhcpv6_mgmt_cb, dhcpv6_iface_event_handler,
 				     NET_EVENT_IF_DOWN | NET_EVENT_IF_UP);
 

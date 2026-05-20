@@ -446,6 +446,9 @@ static void verify_solicit_message(struct net_if *iface, struct net_pkt *pkt)
 	verify_dhcpv6_ia_pd(iface, pkt, NULL, 0);
 	verify_dhcpv6_no_reconfigure_accept(iface, pkt);
 	verify_dhcpv6_oro_sol_max_rt(iface, pkt);
+
+	zassert_equal(net_calc_verify_chksum_udp(pkt), 0U,
+		      "UDP checksum invalid on Solicit");
 }
 
 /* Verify that outgoing DHCPv6 Solicit has a valid format and includes all
@@ -455,12 +458,15 @@ ZTEST(dhcpv6_tests, test_solicit_message_format)
 {
 	int ret;
 
+	test_ctx.iface->config.dhcpv6.state = NET_DHCPV6_SOLICITING;
+	dhcpv6_generate_tid(test_ctx.iface);
+
 	set_dhcpv6_test_fn(verify_solicit_message);
 
 	ret = dhcpv6_send_solicit(test_ctx.iface);
 	zassert_ok(ret, "dhcpv6_send_solicit failed");
 
-	ret = k_sem_take(&test_ctx.tx_sem, K_SECONDS(1));
+	ret = k_sem_take(&test_ctx.tx_sem, K_SECONDS(2));
 	zassert_ok(ret, "Packet not transmitted");
 }
 
@@ -878,8 +884,8 @@ static void test_solicit_expect_request_send_reply(struct net_if *iface,
 	/* Verify options */
 	verify_dhcpv6_clientid(iface, pkt);
 	verify_dhcpv6_serverid(iface, pkt);
-	verify_dhcpv6_ia_na(iface, pkt, NULL);
-	verify_dhcpv6_ia_pd(iface, pkt, NULL, 0);
+	verify_dhcpv6_ia_na(iface, pkt, &test_addr);
+	verify_dhcpv6_ia_pd(iface, pkt, &test_prefix, test_prefix_len);
 
 	/* Verify client state */
 	zassert_equal(iface->config.dhcpv6.state, NET_DHCPV6_REQUESTING,
@@ -907,12 +913,8 @@ static void test_solicit_expect_request_send_reply(struct net_if *iface,
 	k_sem_give(&test_ctx.exchange_complete_sem);
 }
 
-static void test_solicit_expect_solicit_send_advertise(struct net_if *iface,
-						       struct net_pkt *pkt)
+static void test_solicit_expect_solicit(struct net_if *iface, struct net_pkt *pkt)
 {
-	struct net_pkt *reply;
-	int result;
-
 	/* Verify header */
 	verify_dhcpv6_header(iface, pkt, DHCPV6_MSG_TYPE_SOLICIT);
 
@@ -926,28 +928,6 @@ static void test_solicit_expect_solicit_send_advertise(struct net_if *iface,
 		      "Invalid state");
 	zassert_equal(iface->config.dhcpv6.server_preference, -1,
 		      "Invalid initial preference");
-
-	/* Update next expected packet handler */
-	set_dhcpv6_test_fn(test_solicit_expect_request_send_reply);
-
-	/* Reply with Advertise message */
-	reply = test_dhcpv6_create_message(test_ctx.iface,
-					   DHCPV6_MSG_TYPE_ADVERTISE,
-					   set_advertise_options);
-	zassert_not_null(reply, "Failed to create pkt");
-
-	result = net_ipv6_input(reply);
-	zassert_equal(result, NET_OK, "Message should've been processed");
-
-	/* Verify client state */
-	zassert_equal(iface->config.dhcpv6.state, NET_DHCPV6_SOLICITING,
-		      "Invalid state");
-	zassert_equal(iface->config.dhcpv6.server_preference, test_preference,
-		      "Invalid initial preference");
-	zassert_equal(test_serverid.length, iface->config.dhcpv6.serverid.length,
-		      "Invalid Server ID length");
-	zassert_mem_equal(&test_serverid.duid, &iface->config.dhcpv6.serverid.duid,
-			  test_serverid.length, "Invalid Server ID value");
 }
 
 /* Verify that DHCPv6 client can handle standard exchange (Solicit/Request) */
@@ -959,15 +939,43 @@ ZTEST(dhcpv6_tests, test_solicit_exchange)
 	};
 	struct net_if_ipv6_prefix *prefix;
 	struct net_if_addr *addr;
+	struct net_pkt *advertise;
+	enum net_verdict result;
 	int ret;
 
 	test_ctx.reset_dhcpv6 = true;
 	memset(&test_ctx.iface->config.dhcpv6, 0,
 	       sizeof(test_ctx.iface->config.dhcpv6));
 
-	set_dhcpv6_test_fn(test_solicit_expect_solicit_send_advertise);
+	set_dhcpv6_test_fn(test_solicit_expect_solicit);
 
 	net_dhcpv6_start(test_ctx.iface, &params);
+
+	ret = k_sem_take(&test_ctx.tx_sem, K_SECONDS(2));
+	zassert_ok(ret, "Solicit not transmitted");
+
+	/* Inject Advertise outside the TX path (matches real RX timing). */
+	advertise = test_dhcpv6_create_message(test_ctx.iface,
+					       DHCPV6_MSG_TYPE_ADVERTISE,
+					       set_advertise_options);
+	zassert_not_null(advertise, "Failed to create pkt");
+
+	result = net_ipv6_input(advertise);
+	zassert_equal(result, NET_OK, "Advertise should've been processed");
+
+	zassert_equal(test_ctx.iface->config.dhcpv6.server_preference,
+		      test_preference, "Invalid server preference");
+	zassert_equal(test_serverid.length,
+		      test_ctx.iface->config.dhcpv6.serverid.length,
+		      "Invalid Server ID length");
+	zassert_mem_equal(&test_serverid.duid,
+			  &test_ctx.iface->config.dhcpv6.serverid.duid,
+			  test_serverid.length, "Invalid Server ID value");
+
+	set_dhcpv6_test_fn(test_solicit_expect_request_send_reply);
+
+	ret = k_sem_take(&test_ctx.tx_sem, K_SECONDS(1));
+	zassert_ok(ret, "Request not transmitted after Advertise");
 
 	ret = k_sem_take(&test_ctx.exchange_complete_sem, K_SECONDS(2));
 	zassert_ok(ret, "Exchange not completed in required time");
