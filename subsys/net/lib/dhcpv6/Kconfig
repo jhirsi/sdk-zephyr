@@ -31,6 +31,15 @@ config NET_DHCPV6_OPTION_DNS_ADDRESS
 	  option from the server, and if available, use obtained information
 	  to configure DNS resolver.
 
+config NET_DHCPV6_RAPID_COMMIT
+	bool "Send Rapid Commit option in Solicit (OpenWrt-style)"
+	default n
+	depends on NET_DHCPV6
+	help
+	  Include the Rapid Commit option (code 14) in Solicit messages so
+	  servers such as OpenWrt odhcpd can answer with Reply instead of
+	  Advertise, matching typical Linux clients.
+
 config NET_DHCPV6_DNS_SERVER_VIA_INTERFACE
 	bool "Make DNS servers specific to the network interface"
 	depends on NET_DHCPV6_OPTION_DNS_ADDRESS
