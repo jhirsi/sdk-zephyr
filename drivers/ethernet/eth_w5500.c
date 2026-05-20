@@ -204,11 +204,22 @@ static int w5500_tx(const struct device *dev, struct net_pkt *pkt)
 	return 0;
 }
 
+/* Advance socket RX read pointer and issue RECV (release frame in W5500 buffer). */
+static void w5500_rx_commit(const struct device *dev, uint16_t rd_off)
+{
+	uint8_t tmp[2];
+
+	sys_put_be16(rd_off, tmp);
+	w5500_spi_write(dev, W5500_S0_RX_RD, tmp, 2);
+	w5500_command(dev, S0_CR_RECV);
+}
+
 static void w5500_rx(const struct device *dev)
 {
 	uint8_t header[2];
 	uint8_t tmp[2];
 	uint16_t off;
+	uint16_t rd_off;
 	uint16_t rx_len;
 	uint16_t rx_buf_len;
 	uint16_t read_len;
@@ -228,13 +239,30 @@ static void w5500_rx(const struct device *dev)
 	off = sys_get_be16(tmp);
 
 	w5500_readbuf(dev, off, header, 2);
+
+	if (sys_get_be16(header) <= 2) {
+		/* Header value <= 2 would underflow or zero rx_len. The frame
+		 * boundary is unknown, so consume all pending RX bytes to
+		 * prevent W5500 from re-presenting the same corrupt frame.
+		 */
+		rd_off = off + rx_buf_len;
+		eth_stats_update_errors_rx(ctx->iface);
+		goto rx_commit;
+	}
+
 	rx_len = sys_get_be16(header) - 2;
 
 	pkt = net_pkt_rx_alloc_with_buffer(ctx->iface, rx_len, NET_AF_UNSPEC, 0,
 					   K_MSEC(CONFIG_ETH_W5500_TIMEOUT));
 	if (!pkt) {
+		/* Discard the frame from the W5500 RX buffer even though we
+		 * could not allocate a packet for it, otherwise S0_RX_RSR will
+		 * keep reporting data available and w5500_rx will loop forever
+		 * on the same frame.
+		 */
+		rd_off = off + 2 + rx_len;
 		eth_stats_update_errors_rx(ctx->iface);
-		return;
+		goto rx_commit;
 	}
 
 	pkt_buf = pkt->buffer;
@@ -246,6 +274,14 @@ static void w5500_rx(const struct device *dev)
 		size_t frag_len;
 		uint8_t *data_ptr;
 		size_t frame_len;
+
+		if (!pkt_buf) {
+			LOG_ERR("w5500: RX fragment chain exhausted with %u bytes remaining",
+				read_len);
+			net_pkt_unref(pkt);
+			rd_off = off + 2 + rx_len;
+			goto rx_commit;
+		}
 
 		data_ptr = pkt_buf->data;
 
@@ -269,9 +305,10 @@ static void w5500_rx(const struct device *dev)
 		net_pkt_unref(pkt);
 	}
 
-	sys_put_be16(off + 2 + rx_len, tmp);
-	w5500_spi_write(dev, W5500_S0_RX_RD, tmp, 2);
-	w5500_command(dev, S0_CR_RECV);
+	rd_off = off + 2 + rx_len;
+
+rx_commit:
+	w5500_rx_commit(dev, rd_off);
 }
 
 static void w5500_update_link_status(const struct device *dev)
