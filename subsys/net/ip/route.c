@@ -1117,10 +1117,15 @@ int net_route_packet(struct net_pkt *pkt, struct net_in6_addr *nexthop)
 
 	net_pkt_set_forwarding(pkt, true);
 
-	/* Set the source ll address of the iface (if relevant) and the
+	/* Switch to the egress iface before setting link-layer addresses so the
+	 * source address is taken from the nexthop iface, not the ingress one.
+	 */
+	net_pkt_set_iface(pkt, nbr->iface);
+
+	/* Set the source ll address of the egress iface (if relevant) and the
 	 * destination address to be the nexthop recipient.
 	 */
-	if (is_ll_addr_supported(net_pkt_iface(pkt))) {
+	if (is_ll_addr_supported(nbr->iface)) {
 		(void)net_linkaddr_copy(net_pkt_lladdr_src(pkt),
 					net_pkt_lladdr_if(pkt));
 	}
@@ -1128,8 +1133,6 @@ int net_route_packet(struct net_pkt *pkt, struct net_in6_addr *nexthop)
 	if (lladdr) {
 		(void)net_linkaddr_copy(net_pkt_lladdr_dst(pkt), lladdr);
 	}
-
-	net_pkt_set_iface(pkt, nbr->iface);
 
 	net_ipv6_nbr_unlock();
 
