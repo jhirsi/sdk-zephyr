@@ -46,3 +46,41 @@ config ETH_W5500_MONITOR_PERIOD
 	  Monitor task execution period in milliseconds. The monitor task is
 	  periodically executed to detect and report any changes in the
 	  link status to the operating system.
+
+config ETH_W5500_TX_SEM_TIMEOUT_MS
+	int "TX semaphore wait timeout in milliseconds"
+	depends on ETH_W5500
+	default 10
+	range 1 10000
+	help
+	  Maximum time w5500_tx() waits for SENDOK before failing the
+	  transmit.
+
+config ETH_W5500_POLL_MODE
+	bool "Service the W5500 socket interrupt by polling"
+	depends on ETH_W5500
+	help
+	  Normally the driver relies on the W5500 INTn line (int-gpios) to learn
+	  about TX completion (SENDOK) and received frames. Some shields do not
+	  route INTn to an MCU pin (e.g. the WIZnet/Seeed W5500 Ethernet Shield,
+	  where INTn to D2 is an optional 0 ohm resistor that is unpopulated on
+	  some revisions). Without a working INTn, every transmit fails with
+	  "TX semaphore timeout" and no frames are received.
+
+	  Enable this to make the RX thread poll the socket interrupt register
+	  every ETH_W5500_POLL_PERIOD_MS instead of depending solely on the INTn
+	  edge, so TX and RX make progress regardless of INTn wiring. The INTn
+	  path still works when present. Costs extra periodic SPI traffic and
+	  adds up to one poll period of TX-completion / RX latency.
+
+config ETH_W5500_POLL_PERIOD_MS
+	int "W5500 socket interrupt poll period in milliseconds"
+	depends on ETH_W5500_POLL_MODE
+	default 2
+	range 1 100
+	help
+	  How often the RX thread polls the socket interrupt register in poll
+	  mode. Keep this below ETH_W5500_TX_SEM_TIMEOUT_MS so SENDOK is observed
+	  before w5500_tx() times out. Lower values reduce TX/RX latency at the
+	  cost of more SPI traffic; the link status is still refreshed only every
+	  ETH_W5500_MONITOR_PERIOD.
