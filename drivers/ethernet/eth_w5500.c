@@ -156,8 +156,17 @@ static int w5500_writebuf(const struct device *dev, uint16_t offset, uint8_t *bu
 
 static int w5500_command(const struct device *dev, uint8_t cmd)
 {
+	struct w5500_runtime *ctx = dev->data;
 	uint8_t reg;
 	k_timepoint_t end = sys_timepoint_calc(K_MSEC(100));
+	int ret = 0;
+
+	/* Serialize socket commands: SEND (TX thread) and RECV (RX/poll thread)
+	 * both write S0_CR here. Without this lock the two can race on the command
+	 * register and one command is dropped - in poll mode a dropped SEND means
+	 * no SENDOK and a spurious "TX semaphore timeout".
+	 */
+	k_mutex_lock(&ctx->cmd_lock, K_FOREVER);
 
 	w5500_spi_write(dev, W5500_S0_CR, &cmd, 1);
 	while (true) {
@@ -166,12 +175,49 @@ static int w5500_command(const struct device *dev, uint8_t cmd)
 			break;
 		}
 		if (sys_timepoint_expired(end)) {
-			return -EIO;
+			ret = -EIO;
+			break;
 		}
 		k_busy_wait(W5500_PHY_ACCESS_DELAY);
 	}
-	return 0;
+
+	k_mutex_unlock(&ctx->cmd_lock);
+	return ret;
 }
+
+#if defined(CONFIG_ETH_W5500_POLL_MODE)
+/* Poll mode: wait for TX completion (SENDOK) by reading S0_IR in the caller's
+ * own thread context instead of relying on w5500_thread to be scheduled within
+ * the TX timeout. Under load (e.g. a DECT<->Ethernet bridge) the RX poll thread
+ * can be starved past the timeout, which would drop a SENDOK that is actually
+ * set in the W5500. Clears only the SENDOK bit (write-1-to-clear) so it does not
+ * disturb RECV handling done by w5500_thread.
+ */
+static int w5500_tx_wait_sendok(const struct device *dev)
+{
+	k_timepoint_t end = sys_timepoint_calc(K_MSEC(CONFIG_ETH_W5500_TX_SEM_TIMEOUT_MS));
+	uint8_t ir;
+
+	while (true) {
+		w5500_spi_read(dev, W5500_S0_IR, &ir, 1);
+		if (ir & S0_IR_SENDOK) {
+			ir = S0_IR_SENDOK;
+			w5500_spi_write(dev, W5500_S0_IR, &ir, 1);
+			return 0;
+		}
+		if (sys_timepoint_expired(end)) {
+			return -EIO;
+		}
+		/* SENDOK normally latches within microseconds of SEND (the SPI frame
+		 * write usually takes longer than the on-wire TX, so the first read
+		 * above already catches it). Busy-wait a short interval like
+		 * w5500_command() rather than k_msleep(1): at the 32768 Hz tick a 1 ms
+		 * sleep would serialize back-to-back TX (e.g. TCP) to ~1 frame/ms.
+		 */
+		k_busy_wait(W5500_PHY_ACCESS_DELAY);
+	}
+}
+#endif /* CONFIG_ETH_W5500_POLL_MODE */
 
 static int w5500_tx(const struct device *dev, struct net_pkt *pkt)
 {
@@ -185,21 +231,36 @@ static int w5500_tx(const struct device *dev, struct net_pkt *pkt)
 	offset = sys_get_be16(off);
 
 	if (net_pkt_read(pkt, ctx->buf, len)) {
+		LOG_ERR("Failed to read packet");
 		return -EIO;
 	}
 
 	ret = w5500_writebuf(dev, offset, ctx->buf, len);
 	if (ret < 0) {
+		LOG_ERR("Failed to write buffer");
 		return ret;
 	}
 
 	sys_put_be16(offset + len, off);
 	w5500_spi_write(dev, W5500_S0_TX_WR, off, 2);
 
-	w5500_command(dev, S0_CR_SEND);
-	if (k_sem_take(&ctx->tx_sem, K_MSEC(10))) {
+	ret = w5500_command(dev, S0_CR_SEND);
+	if (ret < 0) {
+		LOG_ERR("SEND command not accepted");
+		return ret;
+	}
+
+#if defined(CONFIG_ETH_W5500_POLL_MODE)
+	if (w5500_tx_wait_sendok(dev)) {
+		LOG_ERR("TX semaphore timeout");
 		return -EIO;
 	}
+#else
+	if (k_sem_take(&ctx->tx_sem, K_MSEC(CONFIG_ETH_W5500_TX_SEM_TIMEOUT_MS))) {
+		LOG_ERR("TX semaphore timeout");
+		return -EIO;
+	}
+#endif
 
 	return 0;
 }
@@ -216,6 +277,7 @@ static void w5500_rx_commit(const struct device *dev, uint16_t rd_off)
 
 static void w5500_rx(const struct device *dev)
 {
+	int ret;
 	uint8_t header[2];
 	uint8_t tmp[2];
 	uint16_t off;
@@ -247,6 +309,7 @@ static void w5500_rx(const struct device *dev)
 		 */
 		rd_off = off + rx_buf_len;
 		eth_stats_update_errors_rx(ctx->iface);
+		LOG_ERR("RX drop: invalid frame length header (pending %u)", rx_buf_len);
 		goto rx_commit;
 	}
 
@@ -262,6 +325,7 @@ static void w5500_rx(const struct device *dev)
 		 */
 		rd_off = off + 2 + rx_len;
 		eth_stats_update_errors_rx(ctx->iface);
+		LOG_ERR("RX drop: pkt alloc failed (len %u)", rx_len);
 		goto rx_commit;
 	}
 
@@ -276,8 +340,7 @@ static void w5500_rx(const struct device *dev)
 		size_t frame_len;
 
 		if (!pkt_buf) {
-			LOG_ERR("w5500: RX fragment chain exhausted with %u bytes remaining",
-				read_len);
+			LOG_ERR("RX drop: net_buf frags exhausted (%u bytes left)", read_len);
 			net_pkt_unref(pkt);
 			rd_off = off + 2 + rx_len;
 			goto rx_commit;
@@ -301,7 +364,9 @@ static void w5500_rx(const struct device *dev)
 		pkt_buf = pkt_buf->frags;
 	} while (read_len > 0);
 
-	if (net_recv_data(ctx->iface, pkt) < 0) {
+	ret = net_recv_data(ctx->iface, pkt);
+	if (ret < 0) {
+		LOG_ERR("RX drop: net_recv_data failed (%d), len %u", ret, rx_len);
 		net_pkt_unref(pkt);
 	}
 
@@ -354,6 +419,52 @@ static void w5500_update_link_status(const struct device *dev)
 	}
 }
 
+#if defined(CONFIG_ETH_W5500_POLL_MODE)
+/* Poll-mode socket-0 service, used when the INTn line is not wired to the MCU:
+ * the driver polls S0_IR every CONFIG_ETH_W5500_POLL_PERIOD_MS to pull pending
+ * RX frames. TX completion (SENDOK) is handled directly by w5500_tx() via
+ * w5500_tx_wait_sendok(), so this only clears/handles RECV.
+ */
+static void w5500_poll_service(const struct device *dev)
+{
+	uint8_t ir;
+
+	w5500_spi_read(dev, W5500_S0_IR, &ir, 1);
+
+	/* Leave SENDOK set for w5500_tx_wait_sendok(); S0_IR is write-1-to-clear
+	 * per bit, so clearing RECV does not disturb a pending SENDOK.
+	 */
+	ir &= S0_IR_RECV;
+	if (!ir) {
+		return;
+	}
+	w5500_spi_write(dev, W5500_S0_IR, &ir, 1);
+
+	LOG_DBG("IR received");
+
+	{
+		uint8_t rsr[2];
+		unsigned int n = 0;
+
+		/* Bound the batch: w5500_tx() shares the single SPI bus (and
+		 * cmd_lock) to write its frame and poll SENDOK, so an unbounded
+		 * drain under sustained RX would monopolise the bus and starve TX
+		 * completion past its timeout. Leftover frames are picked up on the
+		 * next poll.
+		 */
+		do {
+			w5500_rx(dev);
+			if (++n >= W5500_POLL_RX_BURST_MAX) {
+				break;
+			}
+			w5500_spi_read(dev, W5500_S0_RX_RSR, rsr, 2);
+		} while (sys_get_be16(rsr) != 0);
+
+		LOG_DBG("RX Done");
+	}
+}
+#endif /* CONFIG_ETH_W5500_POLL_MODE */
+
 static void w5500_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p2);
@@ -364,9 +475,15 @@ static void w5500_thread(void *p1, void *p2, void *p3)
 	int res;
 	struct w5500_runtime *ctx = dev->data;
 	const struct w5500_config *config = dev->config;
+#if defined(CONFIG_ETH_W5500_POLL_MODE)
+	const k_timeout_t wait = K_MSEC(CONFIG_ETH_W5500_POLL_PERIOD_MS);
+	int link_accum_ms = 0;
+#else
+	const k_timeout_t wait = K_MSEC(CONFIG_ETH_W5500_MONITOR_PERIOD);
+#endif
 
 	while (true) {
-		res = k_sem_take(&ctx->int_sem, K_MSEC(CONFIG_ETH_W5500_MONITOR_PERIOD));
+		res = k_sem_take(&ctx->int_sem, wait);
 
 		if (res == 0) {
 			/* semaphore taken, update link status and receive packets */
@@ -396,8 +513,22 @@ static void w5500_thread(void *p1, void *p2, void *p3)
 				}
 			}
 		} else if (res == -EAGAIN) {
+#if defined(CONFIG_ETH_W5500_POLL_MODE)
+			/* No (or unwired) INT line: poll the socket IR every
+			 * period so RECV is serviced, and refresh link status
+			 * only at the slower monitor cadence.
+			 */
+			w5500_poll_service(dev);
+
+			link_accum_ms += CONFIG_ETH_W5500_POLL_PERIOD_MS;
+			if (link_accum_ms >= CONFIG_ETH_W5500_MONITOR_PERIOD) {
+				link_accum_ms = 0;
+				w5500_update_link_status(dev);
+			}
+#else
 			/* semaphore timeout period expired, check link status */
 			w5500_update_link_status(dev);
+#endif
 		}
 	}
 }
@@ -691,6 +822,7 @@ static struct w5500_runtime w5500_0_runtime = {
 					1,  UINT_MAX),
 	.int_sem  = Z_SEM_INITIALIZER(w5500_0_runtime.int_sem,
 				      0, UINT_MAX),
+	.cmd_lock = Z_MUTEX_INITIALIZER(w5500_0_runtime.cmd_lock),
 };
 
 static const struct w5500_config w5500_0_config = {

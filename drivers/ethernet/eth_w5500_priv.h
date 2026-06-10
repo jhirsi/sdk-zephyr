@@ -87,6 +87,11 @@
 
 /* Delay for PHY write/read operations (25.6 us) */
 #define W5500_PHY_ACCESS_DELAY		26U
+
+/* Max RX frames drained per poll-mode service pass before yielding the SPI bus
+ * back to the TX path (see w5500_poll_service()).
+ */
+#define W5500_POLL_RX_BURST_MAX		8U
 struct w5500_config {
 	struct spi_dt_spec spi;
 	struct gpio_dt_spec interrupt;
@@ -105,6 +110,10 @@ struct w5500_runtime {
 	struct gpio_callback gpio_cb;
 	struct k_sem tx_sem;
 	struct k_sem int_sem;
+	/* Serializes socket command (S0_CR) access so a SEND (TX thread) and a
+	 * RECV (RX/poll thread) cannot clobber each other on the command register.
+	 */
+	struct k_mutex cmd_lock;
 	struct phy_link_state state;
 	uint8_t buf[NET_ETH_MAX_FRAME_SIZE];
 };
