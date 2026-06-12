@@ -733,6 +733,42 @@ static void w5500_memory_configure(const struct device *dev)
 	}
 }
 
+/* Apply CONFIG_ETH_W5500_PHY_SPEED to the W5500 internal PHY. AUTO leaves the
+ * chip-default all-capable auto-negotiation untouched. The forced modes write
+ * PHYCFGR with OPMD=1 + the chosen OPMDC bits and toggle RST low->high to
+ * apply.
+ */
+static void w5500_phy_speed_apply(const struct device *dev)
+{
+#if !defined(CONFIG_ETH_W5500_PHY_SPEED_AUTO)
+	uint8_t opmdc;
+	uint8_t phycfgr;
+
+	if (IS_ENABLED(CONFIG_ETH_W5500_PHY_SPEED_10BT_HD)) {
+		opmdc = W5500_PHYCFGR_OPMDC_10BT_HD;
+	} else if (IS_ENABLED(CONFIG_ETH_W5500_PHY_SPEED_10BT_FD)) {
+		opmdc = W5500_PHYCFGR_OPMDC_10BT_FD;
+	} else if (IS_ENABLED(CONFIG_ETH_W5500_PHY_SPEED_100BT_HD)) {
+		opmdc = W5500_PHYCFGR_OPMDC_100BT_HD;
+	} else { /* CONFIG_ETH_W5500_PHY_SPEED_100BT_FD */
+		opmdc = W5500_PHYCFGR_OPMDC_100BT_FD;
+	}
+
+	/* Assert PHY reset (RST=0) with the new OPMD/OPMDC, then release. */
+	phycfgr = W5500_PHYCFGR_OPMD | opmdc;
+	w5500_spi_write(dev, W5500_PHYCFGR, &phycfgr, 1);
+	k_msleep(2);
+	phycfgr |= W5500_PHYCFGR_RST;
+	w5500_spi_write(dev, W5500_PHYCFGR, &phycfgr, 1);
+
+	LOG_INF("PHY forced to %s %s-duplex (auto-negotiation disabled)",
+		(opmdc & BIT(4)) ? "100BT" : "10BT",
+		(opmdc & BIT(3)) ? "full" : "half");
+#else
+	ARG_UNUSED(dev);
+#endif
+}
+
 static int w5500_init(const struct device *dev)
 {
 	int err;
@@ -806,9 +842,12 @@ static int w5500_init(const struct device *dev)
 	/* check retry time value */
 	w5500_spi_read(dev, W5500_RTR, rtr, 2);
 	if (sys_get_be16(rtr) != RTR_DEFAULT) {
-		LOG_ERR("Unable to read RTR register");
+		LOG_ERR("Unable to read RTR register (got 0x%04x, want 0x%04x)",
+			sys_get_be16(rtr), RTR_DEFAULT);
 		return -ENODEV;
-	}
+	    }
+
+	w5500_phy_speed_apply(dev);
 
 	LOG_INF("W5500 Initialized");
 
