@@ -84,3 +84,33 @@ config ETH_W5500_POLL_PERIOD_MS
 	  before w5500_tx() times out. Lower values reduce TX/RX latency at the
 	  cost of more SPI traffic; the link status is still refreshed only every
 	  ETH_W5500_MONITOR_PERIOD.
+
+choice ETH_W5500_PHY_SPEED
+	prompt "W5500 PHY speed/duplex mode"
+	depends on ETH_W5500
+	default ETH_W5500_PHY_SPEED_AUTO
+	help
+	  Selects the W5500 internal PHY operating mode written to PHYCFGR
+	  (OPMD/OPMDC) at driver init.
+
+	  Default is auto-negotiation (all-capable), matching the chip reset
+	  default. The forced modes disable auto-negotiation and lock the PHY
+	  to a fixed speed/duplex; in that case configure the link partner to
+	  the same fixed setting to avoid a duplex mismatch.
+
+config ETH_W5500_PHY_SPEED_AUTO
+	bool "Auto-negotiation (all-capable)"
+
+config ETH_W5500_PHY_SPEED_10BT_HD
+	bool "10BASE-T half-duplex (forced, AN disabled)"
+
+config ETH_W5500_PHY_SPEED_10BT_FD
+	bool "10BASE-T full-duplex (forced, AN disabled)"
+
+config ETH_W5500_PHY_SPEED_100BT_HD
+	bool "100BASE-T half-duplex (forced, AN disabled)"
+
+config ETH_W5500_PHY_SPEED_100BT_FD
+	bool "100BASE-T full-duplex (forced, AN disabled)"
+
+endchoice

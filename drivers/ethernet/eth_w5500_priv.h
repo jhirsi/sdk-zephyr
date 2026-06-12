@@ -35,6 +35,19 @@
 #define W5500_PHYCFGR_SPD	BIT(W5500_PHYCFGR_SPD_BIT) /* Speed status */
 #define W5500_PHYCFGR_DPX	BIT(W5500_PHYCFGR_DPX_BIT) /* Duplex status */
 
+/* PHYCFGR PHY-mode override fields (writable):
+ *   OPMD  (bit 6): 0 = HW pin strap, 1 = software-selected mode below.
+ *   OPMDC (bits 5..3): operation mode select when OPMD=1.
+ *   RST   (bit 7): 0 = PHY in reset, 1 = normal. Toggle 0 -> 1 to apply
+ *   a new OPMD/OPMDC combination.
+ */
+#define W5500_PHYCFGR_OPMD		BIT(6)
+#define W5500_PHYCFGR_RST		BIT(7)
+#define W5500_PHYCFGR_OPMDC_10BT_HD	(0U << 3)
+#define W5500_PHYCFGR_OPMDC_10BT_FD	(1U << 3)
+#define W5500_PHYCFGR_OPMDC_100BT_HD	(2U << 3)
+#define W5500_PHYCFGR_OPMDC_100BT_FD	(3U << 3)
+
 #define W5500_Sn_MR		0x0000 /* Sn Mode Register */
 #define W5500_Sn_CR		0x0001 /* Sn Command Register */
 #define W5500_Sn_IR		0x0002 /* Sn Interrupt Register */
