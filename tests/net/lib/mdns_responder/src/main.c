@@ -20,6 +20,7 @@ LOG_MODULE_REGISTER(mdns_resp_test);
 #include <zephyr/net/mdns_responder.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/net/udp.h>
 #include <zephyr/ztest.h>
 
 #include "dns_pack.h"
@@ -637,6 +638,227 @@ ZTEST(test_mdns_responder, test_basic_dns_sd_query)
 	zassert_ok(res, "Did not receive a response");
 
 	check_basic_dns_sd_query_resp(response_pkts[0]);
+}
+
+/* --- multihomed tests --- */
+
+static struct net_if *iface2;
+
+static struct net_if_test net_iface2_data;
+
+static struct net_in6_addr mh_iface2_gua = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+					    0x28, 0x61, 0x82, 0x56, 0x28, 0x61, 0x82, 0x56 } } };
+static struct net_in6_addr mh_iface2_ll = { { { 0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+					    0, 0, 0, 0, 0, 0, 0, 0x2 } } };
+static struct net_in6_addr mh_querier_ll = { { { 0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+					      0, 0, 0, 0, 0, 0, 0, 0x99 } } };
+/* Upstream /64 on iface1 (eth-like). */
+static struct net_in6_addr mh_iface1_prefix = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+						    0, 0, 0, 0, 0, 0, 0, 0 } } };
+/* On-link /96 on iface2: same upper /64, 32-bit subnet id in bits 64-95. */
+static struct net_in6_addr mh_iface2_prefix = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+						    0x28, 0x61, 0x82, 0x56, 0, 0, 0, 0 } } };
+
+static bool mh_capture_active;
+static struct k_sem mh_response_sem;
+static struct net_pkt *mh_response_pkt;
+
+static uint8_t *mh_iface2_get_mac(const struct device *dev)
+{
+	struct net_if_test *data = dev->data;
+
+	if (data->mac_addr[2] == 0x00) {
+		data->mac_addr[0] = 0x00;
+		data->mac_addr[1] = 0x00;
+		data->mac_addr[2] = 0x5E;
+		data->mac_addr[3] = 0x00;
+		data->mac_addr[4] = 0x53;
+		data->mac_addr[5] = 0x02;
+	}
+
+	memcpy(data->ll_addr.addr, data->mac_addr, sizeof(data->mac_addr));
+	data->ll_addr.len = 6U;
+
+	return data->mac_addr;
+}
+
+static void mh_iface2_init(struct net_if *iface)
+{
+	uint8_t *mac = mh_iface2_get_mac(net_if_get_device(iface));
+
+	net_if_set_link_addr(iface, mac, sizeof(struct net_eth_addr), NET_LINK_ETHERNET);
+	net_if_flag_set(iface, NET_IF_IPV6_NO_ND);
+}
+
+static bool mh_mdns_udp_pkt(struct net_pkt *pkt)
+{
+	struct net_udp_hdr *udp;
+
+	if (!IS_ENABLED(CONFIG_NET_UDP) || net_pkt_family(pkt) != NET_AF_INET6) {
+		return false;
+	}
+
+	udp = net_udp_get_hdr(pkt, NULL);
+
+	return udp != NULL &&
+	       (net_ntohs(udp->src_port) == 5353U || net_ntohs(udp->dst_port) == 5353U);
+}
+
+static int mh_iface2_sender(const struct device *dev, struct net_pkt *pkt)
+{
+	ARG_UNUSED(dev);
+
+	if (!mh_capture_active || !pkt->buffer || mh_response_pkt != NULL) {
+		return 0;
+	}
+
+	if (!mh_mdns_udp_pkt(pkt)) {
+		return 0;
+	}
+
+	net_pkt_ref(pkt);
+	mh_response_pkt = pkt;
+	k_sem_give(&mh_response_sem);
+
+	return 0;
+}
+
+static struct dummy_api mh_iface2_api = {
+	.iface_api.init = mh_iface2_init,
+	.send = mh_iface2_sender,
+};
+
+NET_DEVICE_INIT_INSTANCE(net_iface2_test,
+			 "iface2",
+			 iface2,
+			 NULL,
+			 NULL,
+			 &net_iface2_data,
+			 NULL,
+			 CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,
+			 &mh_iface2_api,
+			 _ETH_L2_LAYER,
+			 _ETH_L2_CTX_TYPE,
+			 128);
+
+static void mh_check_aaaa_on_iface(struct net_pkt *pkt, struct net_if *expect,
+				   struct net_if *forbid)
+{
+	struct dns_header resp_header;
+	struct dns_rr resp_record;
+	struct net_in6_addr resp_addr;
+	uint16_t ancount;
+
+	net_pkt_cursor_init(pkt);
+	net_pkt_set_overwrite(pkt, true);
+	zassert_ok(net_pkt_skip(pkt, NET_IPV6UDPH_LEN), "net_pkt skip failed");
+	zassert_ok(net_pkt_read(pkt, &resp_header, sizeof(resp_header)), "net_pkt read failed");
+
+	ancount = net_ntohs(resp_header.ancount);
+	zassert_true(ancount > 0, "Expected at least one answer");
+
+	for (uint16_t i = 0; i < ancount; i++) {
+		skip_labels(pkt);
+		zassert_ok(net_pkt_read(pkt, &resp_record, sizeof(resp_record)),
+			   "net_pkt read failed");
+		zassert_equal(net_ntohs(resp_record.type), DNS_RR_TYPE_AAAA,
+			      "Expected AAAA answer only");
+		zassert_equal(net_ntohs(resp_record.rdlength), sizeof(struct net_in6_addr),
+			      "Invalid AAAA length");
+		zassert_ok(net_pkt_read(pkt, &resp_addr, sizeof(resp_addr)),
+			   "net_pkt read failed");
+		zassert_not_null(net_if_ipv6_addr_lookup_by_iface(expect, &resp_addr),
+				 "AAAA should belong to query iface");
+		zassert_is_null(net_if_ipv6_addr_lookup_by_iface(forbid, &resp_addr),
+				"AAAA must not come from other iface");
+	}
+}
+
+static void mh_send_query(struct net_if *iface, const struct net_in6_addr *src,
+			  const struct net_in6_addr *dst, const uint8_t *data, size_t len)
+{
+	struct net_pkt *pkt;
+	uint8_t v6_buf[40];
+	uint16_t payload_len = len + NET_UDPH_LEN;
+
+	pkt = net_pkt_alloc_with_buffer(iface, NET_IPV6UDPH_LEN + len, NET_AF_UNSPEC, 0, K_FOREVER);
+	zassert_not_null(pkt, "PKT is null");
+
+	memset(v6_buf, 0, sizeof(v6_buf));
+	v6_buf[0] = 0x60;
+	memcpy(&v6_buf[8], src->s6_addr, 16);
+	memcpy(&v6_buf[24], dst->s6_addr, 16);
+	v6_buf[6] = NET_IPPROTO_UDP;
+	v6_buf[7] = 255;
+
+	zassert_ok(net_pkt_write(pkt, v6_buf, 4), "pkt write for v6 start failed");
+	zassert_ok(net_pkt_write_be16(pkt, payload_len), "pkt write for v6 payload len failed");
+	zassert_ok(net_pkt_write(pkt, &v6_buf[6], sizeof(v6_buf) - 6),
+		   "pkt write for v6 rest failed");
+	zassert_ok(net_pkt_write_be16(pkt, 5353), "pkt write for UDP src port failed");
+	zassert_ok(net_pkt_write_be16(pkt, 5353), "pkt write for UDP dst port failed");
+	zassert_ok(net_pkt_write_be16(pkt, payload_len), "pkt write for UDP length failed");
+	zassert_ok(net_pkt_write_be16(pkt, 0), "pkt write for UDP checksum failed");
+	zassert_ok(net_pkt_write(pkt, data, len), "net_pkt_write() for data failed");
+	zassert_ok(net_recv_data(iface, pkt), "net_recv_data() failed");
+}
+
+ZTEST(test_mdns_responder, test_multihomed_aaaa_on_recv_iface)
+{
+	/* Multi-homed: iface1 has upstream /64, iface2 on-link /96 (shared upper
+	 * /64, longer on-link prefix). iface1 is default. Query on iface2 must
+	 * answer with iface2 AAAA only (responder socket BINDTODEVICE), not
+	 * addresses chosen via net_if_ipv6_select_src_iface(querier).
+	 */
+	static const uint8_t hostname_query[] = {
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x06, 0x7a, 0x65, 0x70, 0x68, 0x79, 0x72, 0x05, 0x6c, 0x6f, 0x63, 0x61, 0x6c,
+		0x00, 0x00, 0x1c, 0x00, 0x01
+	};
+	struct net_in6_addr mcast = { { { 0xff, 0x02, 0, 0, 0, 0, 0, 0,
+					 0, 0, 0, 0, 0, 0, 0, 0xfb } } };
+	struct net_if_addr *ifaddr;
+	int res;
+
+	iface2 = net_if_get_by_index(2);
+	zassert_not_null(iface2, "iface2 missing");
+
+	k_sem_init(&mh_response_sem, 0, 1);
+	mh_response_pkt = NULL;
+	mh_capture_active = true;
+
+	(void)net_if_ipv6_prefix_add(iface1, &mh_iface1_prefix, 64,
+				     NET_IPV6_ND_INFINITE_LIFETIME);
+	(void)net_if_ipv6_prefix_add(iface2, &mh_iface2_prefix, 96,
+				     NET_IPV6_ND_INFINITE_LIFETIME);
+
+	ifaddr = net_if_ipv6_addr_add(iface2, &mh_iface2_ll, NET_ADDR_MANUAL, 0);
+	zassert_not_null(ifaddr, "Failed to add iface2 LL");
+	ifaddr->addr_state = NET_ADDR_PREFERRED;
+
+	ifaddr = net_if_ipv6_addr_add(iface2, &mh_iface2_gua, NET_ADDR_MANUAL, 0);
+	zassert_not_null(ifaddr, "Failed to add iface2 GUA");
+	ifaddr->addr_state = NET_ADDR_PREFERRED;
+
+	net_ipv6_nbr_add(iface2, &mh_querier_ll, net_if_get_link_addr(iface2), false,
+			 NET_IPV6_NBR_STATE_STATIC);
+
+	net_if_set_default(iface1);
+	net_if_up(iface2);
+	k_sleep(K_MSEC(500));
+
+	mh_send_query(iface2, &mh_querier_ll, &mcast, hostname_query, sizeof(hostname_query));
+
+	res = k_sem_take(&mh_response_sem, RESPONSE_TIMEOUT);
+	zassert_ok(res, "Did not receive mDNS response on iface2");
+
+	mh_check_aaaa_on_iface(mh_response_pkt, iface2, iface1);
+
+	mh_capture_active = false;
+	if (mh_response_pkt != NULL) {
+		net_pkt_unref(mh_response_pkt);
+		mh_response_pkt = NULL;
+	}
 }
 
 ZTEST_SUITE(test_mdns_responder, NULL, test_setup, before, cleanup, NULL);
