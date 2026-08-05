@@ -169,8 +169,12 @@ static bool w5500_uses_poll(const struct device *dev)
 
 static int w5500_command(const struct device *dev, uint8_t cmd)
 {
+	struct w5500_runtime *ctx = dev->data;
 	uint8_t reg;
 	k_timepoint_t end = sys_timepoint_calc(K_MSEC(100));
+	int ret = 0;
+
+	k_mutex_lock(&ctx->cmd_lock, K_FOREVER);
 
 	w5500_spi_write(dev, W5500_S0_CR, &cmd, 1);
 	while (true) {
@@ -179,12 +183,15 @@ static int w5500_command(const struct device *dev, uint8_t cmd)
 			break;
 		}
 		if (sys_timepoint_expired(end)) {
-			return -EIO;
+			ret = -EIO;
+			break;
 		}
 		k_busy_wait(W5500_PHY_ACCESS_DELAY);
 	}
 
-	return 0;
+	k_mutex_unlock(&ctx->cmd_lock);
+
+	return ret;
 }
 
 static int w5500_tx_wait_sendok(const struct device *dev)
@@ -819,6 +826,7 @@ static int w5500_init(const struct device *dev)
 	static struct w5500_runtime w5500_runtime_##inst = {                              \
 		.tx_sem  = Z_SEM_INITIALIZER(w5500_runtime_##inst.tx_sem, 1, UINT_MAX),   \
 		.int_sem = Z_SEM_INITIALIZER(w5500_runtime_##inst.int_sem, 0, UINT_MAX),  \
+		.cmd_lock = Z_MUTEX_INITIALIZER(w5500_runtime_##inst.cmd_lock),          \
 	};                                                                                \
 	static const struct w5500_config w5500_config_##inst = {                          \
 		.spi = SPI_DT_SPEC_INST_GET(inst, SPI_WORD_SET(8)),                       \
