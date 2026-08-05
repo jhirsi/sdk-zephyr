@@ -113,6 +113,7 @@ struct w5500_runtime {
 	struct gpio_callback gpio_cb;
 	struct k_sem tx_sem;
 	struct k_sem int_sem;
+	struct k_mutex cmd_lock;
 	int link_accum_ms;
 	struct phy_link_state state;
 	uint8_t buf[NET_ETH_MAX_FRAME_SIZE];
