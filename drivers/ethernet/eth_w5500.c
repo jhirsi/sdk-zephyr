@@ -154,6 +154,19 @@ static int w5500_writebuf(const struct device *dev, uint16_t offset, uint8_t *bu
 	return w5500_spi_write(dev, mem_start, buf + len, remain);
 }
 
+static bool w5500_uses_poll(const struct device *dev)
+{
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(int_gpios)
+	const struct w5500_config *config = dev->config;
+
+	return config->interrupt.port == NULL;
+#else
+	ARG_UNUSED(dev);
+
+	return true;
+#endif
+}
+
 static int w5500_command(const struct device *dev, uint8_t cmd)
 {
 	uint8_t reg;
@@ -170,7 +183,27 @@ static int w5500_command(const struct device *dev, uint8_t cmd)
 		}
 		k_busy_wait(W5500_PHY_ACCESS_DELAY);
 	}
+
 	return 0;
+}
+
+static int w5500_tx_wait_sendok(const struct device *dev)
+{
+	k_timepoint_t end = sys_timepoint_calc(K_MSEC(CONFIG_ETH_W5500_TX_SEM_TIMEOUT_MS));
+	uint8_t ir;
+
+	while (true) {
+		w5500_spi_read(dev, W5500_S0_IR, &ir, 1);
+		if (ir & S0_IR_SENDOK) {
+			ir = S0_IR_SENDOK;
+			w5500_spi_write(dev, W5500_S0_IR, &ir, 1);
+			return 0;
+		}
+		if (sys_timepoint_expired(end)) {
+			return -EIO;
+		}
+		k_busy_wait(W5500_PHY_ACCESS_DELAY);
+	}
 }
 
 static int w5500_tx(const struct device *dev, struct net_pkt *pkt)
@@ -196,8 +229,16 @@ static int w5500_tx(const struct device *dev, struct net_pkt *pkt)
 	sys_put_be16(offset + len, off);
 	w5500_spi_write(dev, W5500_S0_TX_WR, off, 2);
 
-	w5500_command(dev, S0_CR_SEND);
-	if (k_sem_take(&ctx->tx_sem, K_MSEC(10))) {
+	ret = w5500_command(dev, S0_CR_SEND);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (w5500_uses_poll(dev)) {
+		if (w5500_tx_wait_sendok(dev)) {
+			return -EIO;
+		}
+	} else if (k_sem_take(&ctx->tx_sem, K_MSEC(CONFIG_ETH_W5500_TX_SEM_TIMEOUT_MS))) {
 		return -EIO;
 	}
 
@@ -346,6 +387,7 @@ static void w5500_update_link_status(const struct device *dev)
 	}
 }
 
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(int_gpios)
 static uint8_t w5500_check_for_ir(const struct device *dev)
 {
 	uint8_t ir;
@@ -370,6 +412,41 @@ static uint8_t w5500_check_for_ir(const struct device *dev)
 
 	return ir;
 }
+#endif
+
+#if !DT_ALL_INST_HAS_PROP_STATUS_OKAY(int_gpios)
+static void w5500_poll_service(const struct device *dev)
+{
+	uint8_t ir;
+
+	w5500_spi_read(dev, W5500_S0_IR, &ir, 1);
+
+	/* SENDOK is handled by w5500_tx_wait_sendok(); only service RECV here. */
+	ir &= S0_IR_RECV;
+	if (ir == 0U) {
+		return;
+	}
+
+	w5500_spi_write(dev, W5500_S0_IR, &ir, 1);
+
+	LOG_DBG("IR received");
+
+	{
+		uint8_t rsr[2];
+		unsigned int n = 0;
+
+		do {
+			w5500_rx(dev);
+			if (++n >= W5500_POLL_RX_BURST_MAX) {
+				break;
+			}
+			w5500_spi_read(dev, W5500_S0_RX_RSR, rsr, 2);
+		} while (sys_get_be16(rsr) != 0);
+
+		LOG_DBG("RX Done");
+	}
+}
+#endif
 
 #if !DT_ALL_INST_HAS_PROP_STATUS_OKAY(int_gpios)
 static void w5500_thread_poll(const struct device *dev)
@@ -383,8 +460,11 @@ static void w5500_thread_poll(const struct device *dev)
 	}
 
 	k_msleep(CONFIG_ETH_W5500_POLL_PERIOD);
+	w5500_poll_service(dev);
 
-	if (w5500_check_for_ir(dev) == 0U) {
+	ctx->link_accum_ms += CONFIG_ETH_W5500_POLL_PERIOD;
+	if (ctx->link_accum_ms >= CONFIG_ETH_W5500_MONITOR_PERIOD) {
+		ctx->link_accum_ms = 0;
 		w5500_update_link_status(dev);
 	}
 }
