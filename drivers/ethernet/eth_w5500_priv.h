@@ -87,6 +87,12 @@
 
 /* Delay for PHY write/read operations (25.6 us) */
 #define W5500_PHY_ACCESS_DELAY		26U
+
+/* Max RX frames drained per poll-mode service pass before yielding the SPI bus
+ * back to the TX path (see w5500_poll_service()).
+ */
+#define W5500_POLL_RX_BURST_MAX		8U
+
 struct w5500_config {
 	struct spi_dt_spec spi;
 #if DT_ANY_INST_HAS_PROP_STATUS_OKAY(int_gpios)
@@ -107,6 +113,7 @@ struct w5500_runtime {
 	struct gpio_callback gpio_cb;
 	struct k_sem tx_sem;
 	struct k_sem int_sem;
+	int link_accum_ms;
 	struct phy_link_state state;
 	uint8_t buf[NET_ETH_MAX_FRAME_SIZE];
 };
