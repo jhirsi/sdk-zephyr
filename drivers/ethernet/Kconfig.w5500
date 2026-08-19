@@ -55,3 +55,16 @@ config ETH_W5500_POLL_PERIOD
 	  Polling interval in milliseconds for RX data and link status
 	  when operating in polling mode (no int-gpios defined in
 	  devicetree).
+
+config ETH_W5500_TX_SEM_TIMEOUT_MS
+	int "TX semaphore wait timeout in milliseconds"
+	depends on ETH_W5500
+	default 10
+	range 1 1000
+	help
+	  Maximum time w5500_tx() waits for SENDOK before failing the
+	  transmit in interrupt mode. In devicetree polling mode (no
+	  int-gpios) the driver instead busy-waits on S0_IR from the TX
+	  path using the same timeout, blocking the calling thread's CPU
+	  for the whole duration on a stalled link; keep this value small
+	  in that mode.
