@@ -34,6 +34,27 @@ static struct socket_dispatch_table {
 	struct dns_socket_dispatcher *ctx;
 } dispatch_table[ZVFS_OPEN_SIZE];
 
+/* Can resolver and responder share the same UDP port (e.g. mDNS 5353)?
+ *
+ * Pairing lets the second registration reuse the first socket. Refuse it
+ * only when both sides are scoped to different interfaces: each side is
+ * then bound to its own link and pairing them would mix wrong-interface
+ * answers.
+ *
+ * When one side is unscoped (ifindex 0) it must keep pairing even on a
+ * multi-interface host. Refusing is not a benign "stay independent"
+ * outcome: the refused side falls through to bind the shared port, which
+ * fails against the already-bound peer (these sockets do not use
+ * SO_REUSEPORT), and an unpaired responder socket drops any response it
+ * receives. The unscoped side pairing with an arbitrary interface's peer
+ * is a known limitation, but it keeps registration working.
+ */
+ static bool dns_dispatcher_can_pair(const struct dns_socket_dispatcher *a,
+	const struct dns_socket_dispatcher *b)
+{
+	return a->ifindex == 0 || b->ifindex == 0 || a->ifindex == b->ifindex;
+}
+
 static int dns_dispatch(struct dns_socket_dispatcher *dispatcher,
 			int sock, struct net_sockaddr *addr, size_t addrlen,
 			struct net_buf *dns_data, size_t buf_len)
@@ -68,7 +89,7 @@ static int dns_dispatch(struct dns_socket_dispatcher *dispatcher,
 					     addr, addrlen,
 					     dns_data, data_len);
 		} else if (dispatcher->pair) {
-			ret = dispatcher->pair->cb(dispatcher, sock,
+			ret = dispatcher->pair->cb(dispatcher->pair, sock,
 						   addr, addrlen,
 						   dns_data, data_len);
 		} else {
@@ -86,7 +107,7 @@ static int dns_dispatch(struct dns_socket_dispatcher *dispatcher,
 					     addr, addrlen,
 					     dns_data, data_len);
 		} else if (dispatcher->pair) {
-			ret = dispatcher->pair->cb(dispatcher, sock,
+			ret = dispatcher->pair->cb(dispatcher->pair, sock,
 						   addr, addrlen,
 						   dns_data, data_len);
 		} else {
@@ -235,7 +256,8 @@ int dns_dispatcher_register(struct dns_socket_dispatcher *ctx)
 		if (found == NULL && ctx->type != entry->type &&
 		    ctx->local_addr.sa_family == entry->local_addr.sa_family) {
 			if (net_sin(&entry->local_addr)->sin_port ==
-			    net_sin(&ctx->local_addr)->sin_port) {
+			    net_sin(&ctx->local_addr)->sin_port &&
+			    dns_dispatcher_can_pair(ctx, entry)) {
 				found = entry;
 				continue;
 			}
