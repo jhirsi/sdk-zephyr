@@ -374,6 +374,8 @@ static enum net_verdict ipv6_route_packet(struct net_pkt *pkt,
 		if (IS_ENABLED(CONFIG_NET_IPV6_FORWARDING) &&
 		    net_pkt_orig_iface(pkt) != net_pkt_iface(pkt) &&
 		    !net_if_flag_is_set(net_pkt_orig_iface(pkt), NET_IF_IPV6_NO_ND)) {
+			struct net_if *src_iface = net_pkt_orig_iface(pkt);
+
 			/* If the route interface to destination is
 			 * different than the original route, then add
 			 * route to original source.
@@ -382,7 +384,16 @@ static enum net_verdict ipv6_route_packet(struct net_pkt *pkt,
 				pkt, net_pkt_orig_iface(pkt),
 				net_pkt_iface(pkt));
 
-			add_route(net_pkt_orig_iface(pkt), &src_ip, 128);
+			/* Add the route only when the source is on-link on
+			 * the original interface. The source is the next hop
+			 * of the route, and a destination is its own next hop
+			 * only when it is on-link (RFC 4861 ch 5.2). Other
+			 * sources keep using the existing routes or the
+			 * default router.
+			 */
+			if (net_if_ipv6_addr_onlink(&src_iface, &src_ip)) {
+				add_route(net_pkt_orig_iface(pkt), &src_ip, 128);
+			}
 		}
 
 		if (IS_ENABLED(CONFIG_NET_IPV6_FORWARDING) &&
