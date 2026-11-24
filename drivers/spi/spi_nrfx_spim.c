@@ -26,6 +26,9 @@ struct driver_config {
 	struct spi_nrfx_common_config common;
 };
 
+/* Discarded RX data of a segment that has no TX and no RX buffer */
+static uint8_t nop_rx_buf[32];
+
 static void transfer_end(const struct device *dev, int ret)
 {
 	struct driver_data *dev_data = dev->data;
@@ -69,6 +72,15 @@ static void transfer_start(const struct device *dev)
 	} else {
 		rx_buf = NULL;
 		rx_buf_len = 0;
+	}
+
+	if (tx_buf == NULL && rx_buf == NULL) {
+		/* NOP in both directions: clock it into a dummy RX buffer. Without buffers the
+		 * common layer makes no progress and this function would recurse forever.
+		 */
+		chunk_len = MIN(chunk_len, sizeof(nop_rx_buf));
+		rx_buf = nop_rx_buf;
+		rx_buf_len = chunk_len;
 	}
 
 	spi_nrfx_spim_common_transfer_start(dev,
